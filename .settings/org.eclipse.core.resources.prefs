@@ -1,0 +1,3 @@
+eclipse.preferences.version=1
+encoding//app/Models/HistoricalPlayerStat.php=UTF-8
+encoding//database/migrations/2025_05_26_131451_create_historical_player_stats_table.php=UTF-8
