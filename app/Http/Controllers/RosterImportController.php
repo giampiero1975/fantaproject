@@ -3,13 +3,14 @@
 namespace App\Http\Controllers;
 
 use App\Models\Player;
-use App\Models\ImportLog; // <-- AGGIUNGI MODELLO IMPORTLOG
+use App\Models\ImportLog;
 use Illuminate\Http\Request;
 use Maatwebsite\Excel\Facades\Excel;
 use App\Imports\MainRosterImport;
-use App\Imports\FirstRowOnlyImport; // <-- Creeremo questa piccola classe di utility
+use App\Imports\FirstRowOnlyImport;
 use Illuminate\Support\Facades\Log;
 use Illuminate\View\View;
+use Throwable;
 
 class RosterImportController extends Controller
 {
@@ -25,72 +26,101 @@ class RosterImportController extends Controller
         Log::info('RosterImportController@handleUpload: Validazione superata.');
         
         $file = $request->file('roster_file');
-        if (!$file || !$file->isValid()) {
-            Log::error('RosterImportController@handleUpload: File non valido.');
-            return back()->withErrors(['import_error' => 'File non valido.']);
-        }
+        if (!$file || !$file->isValid()) { /* ... gestione errore ... */ }
         
         $originalFileName = $file->getClientOriginalName();
         Log::info('RosterImportController@handleUpload: File "' . $originalFileName . '" ricevuto. Inizio importazione...');
         
-        // Tentativo di leggere il tag dalla riga 1 del foglio "Tutti"
         $importTag = 'N/A';
         try {
-            // Usiamo una classe di importazione semplice per leggere solo la prima riga del primo foglio utile
-            // NOTA: Questo approccio per leggere il tag è semplificato. Assume che "Tutti" sia il primo foglio
-            // o che la prima riga del primo foglio sia rappresentativa.
-            // Per una soluzione più robusta, FirstRowOnlyImport dovrebbe gestire la selezione del foglio "Tutti".
-            $firstRowData = Excel::toArray(new FirstRowOnlyImport('Tutti'), $file);
-            
-            // $firstRowData sarà un array di fogli; ogni foglio un array di righe.
-            // Se FirstRowOnlyImport gestisce il nome del foglio, dovremmo avere solo i dati di 'Tutti'.
-            if (!empty($firstRowData) && !empty($firstRowData[0]) && !empty($firstRowData[0][0])) {
-                // Prendi il primo valore della prima riga del foglio selezionato
-                $importTag = (string) ($firstRowData[0][0][0] ?? 'Tag non trovato');
+            $firstRowDataArray = Excel::toArray(new FirstRowOnlyImport('Tutti'), $file);
+            if (!empty($firstRowDataArray) && !empty($firstRowDataArray[0]) && !empty($firstRowDataArray[0][0]) && isset($firstRowDataArray[0][0][0])) {
+                $importTag = (string) $firstRowDataArray[0][0][0];
+            } else {
+                $importTag = 'Tag non trovato o foglio "Tutti" vuoto/mancante';
             }
-            Log::info('Tag importazione letto: ' . $importTag);
-        } catch (\Throwable $e) {
-            Log::warning('RosterImportController@handleUpload: Impossibile leggere il tag dalla riga 1. Errore: ' . $e->getMessage());
+            Log::info('Tag importazione letto per Roster: ' . $importTag);
+        } catch (Throwable $e) {
+            Log::warning('RosterImportController@handleUpload: Impossibile leggere il tag dalla riga 1 del Roster. Errore: ' . $e->getMessage());
+            $importTag = 'Errore lettura tag: ' . $e->getMessage();
         }
         
         $importLog = ImportLog::create([
             'original_file_name' => $originalFileName,
             'import_type' => 'roster_quotazioni',
             'status' => 'in_corso',
-            'details' => 'Tag: ' . $importTag,
+            'details' => 'Avvio importazione Roster. Tag: ' . $importTag,
         ]);
+        Log::info('RosterImportController@handleUpload: ImportLog ID ' . $importLog->id . ' creato con status: in_corso');
+        
+        $mainImporter = new MainRosterImport(); // Istanzia l'importer principale
         
         try {
             Log::info('RosterImportController@handleUpload: Eseguo il soft-delete di tutti i giocatori esistenti...');
             Player::query()->delete();
             Log::info('RosterImportController@handleUpload: Soft-delete completato.');
             
-            $mainImporter = new MainRosterImport(2); // Riga intestazioni per "Tutti" è la 2
-            Excel::import($mainImporter, $file);
+            Excel::import($mainImporter, $file); // Passa l'istanza
             
-            // Qui potremmo voler ottenere un conteggio dei record processati/creati/aggiornati
-            // da $mainImporter o da un evento, per ora lo omettiamo per semplicità.
+            $tuttiSheetImporter = $mainImporter->getTuttiSheetImporter(); // Ottieni l'importer del foglio
+            
             $importLog->status = 'successo';
-            $importLog->details = 'Importazione completata con successo. Tag: ' . $importTag;
-            // $importLog->rows_processed = ... ; // Da implementare
+            $importLog->details = 'Importazione Roster completata con successo. Tag: ' . $importTag;
+            $importLog->rows_processed = $tuttiSheetImporter->getProcessedCount();
+            $importLog->rows_created = $tuttiSheetImporter->getCreatedCount();
+            $importLog->rows_updated = $tuttiSheetImporter->getUpdatedCount();
             $importLog->save();
+            Log::info('RosterImportController@handleUpload: ImportLog ID ' . $importLog->id . ' aggiornato a status: successo. Processed: '.$importLog->rows_processed.', Created: '.$importLog->rows_created.', Updated: '.$importLog->rows_updated);
             
-            Log::info('RosterImportController@handleUpload: Excel::import chiamato con successo per il file: ' . $originalFileName);
-            return back()->with('success', 'File "' . $originalFileName . '" importato e giocatori aggiornati!');
+            return back()->with('success', 'File "' . $originalFileName . '" importato! Righe processate: '.$importLog->rows_processed);
             
         } catch (\Maatwebsite\Excel\Validators\ValidationException $e) {
             $failures = $e->failures();
-            Log::error('RosterImportController@handleUpload: ValidationException.', ['failures' => $failures, 'file' => $originalFileName]);
+            $errorMessages = [];
+            foreach ($failures as $failure) {
+                $errorMessages[] = "Riga {$failure->row()}: " . implode(', ', $failure->errors()) . " per attributo {$failure->attribute()} (Valori: " . json_encode($failure->values()) . ")";
+            }
+            Log::error('RosterImportController@handleUpload: ValidationException.', [
+                'file' => $originalFileName,
+                'failures_count' => count($failures),
+                'first_failure_details' => !empty($failures) ? $failures[0]->toArray() : null,
+                'error_messages_summary' => implode('; ', $errorMessages)
+            ]);
+            
             $importLog->status = 'fallito';
-            $importLog->details = 'ValidationException: ' . json_encode($failures) . '. Tag: ' . $importTag;
+            $importLog->details = 'ValidationException: ' . implode('; ', $errorMessages) . '. Tag: ' . $importTag;
+            // Recupera conteggi parziali se possibile
+            if ($mainImporter && method_exists($mainImporter, 'getTuttiSheetImporter')) {
+                $tuttiSheetImporter = $mainImporter->getTuttiSheetImporter();
+                if($tuttiSheetImporter) {
+                    $importLog->rows_processed = $tuttiSheetImporter->getProcessedCount();
+                    $importLog->rows_created = $tuttiSheetImporter->getCreatedCount();
+                    $importLog->rows_updated = $tuttiSheetImporter->getUpdatedCount();
+                }
+            }
             $importLog->save();
-            return back()->withErrors(['import_error' => 'Errori di validazione durante l\'importazione.']);
-        } catch (\Throwable $th) {
-            Log::error('RosterImportController@handleUpload: Throwable Exception.', ['error' => $th->getMessage(), 'file' => $originalFileName]);
+            Log::info('RosterImportController@handleUpload: ImportLog ID ' . $importLog->id . ' aggiornato a status (ValidationException): ' . $importLog->status);
+            
+            return back()->withErrors(['import_error' => 'Errori di validazione: ' . implode('; ', $errorMessages)])->withInput();
+            
+        } catch (Throwable $th) {
+            Log::error('RosterImportController@handleUpload: Throwable Exception.', ['error' => $th->getMessage(), 'file' => $originalFileName, 'trace' => substr($th->getTraceAsString(),0,500)]);
+            
             $importLog->status = 'fallito';
             $importLog->details = 'Throwable Exception: ' . $th->getMessage() . '. Tag: ' . $importTag;
+            // Recupera conteggi parziali se possibile
+            if ($mainImporter && method_exists($mainImporter, 'getTuttiSheetImporter')) {
+                $tuttiSheetImporter = $mainImporter->getTuttiSheetImporter();
+                if ($tuttiSheetImporter) {
+                    $importLog->rows_processed = $tuttiSheetImporter->getProcessedCount();
+                    $importLog->rows_created = $tuttiSheetImporter->getCreatedCount();
+                    $importLog->rows_updated = $tuttiSheetImporter->getUpdatedCount();
+                }
+            }
             $importLog->save();
-            return back()->withErrors(['import_error' => 'Errore imprevisto: ' . $th->getMessage()]);
+            Log::info('RosterImportController@handleUpload: ImportLog ID ' . $importLog->id . ' aggiornato a status (Throwable): ' . $importLog->status);
+            
+            return back()->withErrors(['import_error' => 'Errore imprevisto: ' . $th->getMessage()])->withInput();
         }
     }
 }

@@ -12,12 +12,27 @@ use Throwable;
 class TuttiHistoricalStatsImport implements ToModel, WithHeadingRow, SkipsOnError
 {
     private string $seasonYearToImport;
-    private static bool $keysLoggedForHistoricalStats = false; // Nome variabile statica univoco
+    private static bool $keysLoggedForHistoricalImport = false;
+    private int $rowDataRowCount = 0; // Contatore per le righe di dati lette da Excel
+    
+    // Contatori per ImportLog
+    public int $processedCount = 0; // Righe valide che iniziano il processo di model()
+    public int $createdCount = 0;
+    public int $updatedCount = 0;
+    
+    private const CLASSIC_ROLE_MAP = [
+        0 => 'P', 1 => 'D', 2 => 'C', 3 => 'A'
+    ];
     
     public function __construct(string $seasonYear)
     {
         $this->seasonYearToImport = $seasonYear;
-        self::$keysLoggedForHistoricalStats = false;
+        self::$keysLoggedForHistoricalImport = false;
+        $this->rowDataRowCount = 0;
+        // Inizializza i contatori
+        $this->processedCount = 0;
+        $this->createdCount = 0;
+        $this->updatedCount = 0;
     }
     
     public function headingRow(): int
@@ -27,88 +42,100 @@ class TuttiHistoricalStatsImport implements ToModel, WithHeadingRow, SkipsOnErro
     
     public function model(array $row)
     {
-        if (!self::$keysLoggedForHistoricalStats) {
-            Log::info('TuttiHistoricalStatsImport@model: CHIAVI RICEVUTE (Statistiche): ' . json_encode(array_keys($row)));
-            Log::info('TuttiHistoricalStatsImport@model: DATI PRIMA RIGA (Statistiche): ' . json_encode($row));
-            self::$keysLoggedForHistoricalStats = true;
+        $this->rowDataRowCount++; // Incrementa per ogni riga letta da Excel dopo l'intestazione
+        
+        if (!self::$keysLoggedForHistoricalImport && !empty($row)) {
+            Log::info('TuttiHistoricalStatsImport@model: CHIAVI RICEVUTE (dalla riga d\'intestazione Excel #' . $this->headingRow() . '): ' . json_encode(array_keys($row)));
+            self::$keysLoggedForHistoricalImport = true;
         }
         
-        if (!isset($row['id']) || $row['id'] === '' || $row['id'] === null ||
-            !isset($row['nome']) || $row['nome'] === '' || $row['nome'] === null ) {
-                Log::warning('TuttiHistoricalStatsImport@model: Riga STATISTICHE saltata per mancanza di "id" o "nome". Dati: ' . json_encode($row));
-                return null;
+        if ($this->rowDataRowCount <= 3 || $this->rowDataRowCount % 100 == 0) {
+            Log::info('TuttiHistoricalStatsImport@model: Processing Excel data row #' . $this->rowDataRowCount . ' (Excel file row #' . ($this->rowDataRowCount + $this->headingRow()) . ') Data: ' . json_encode($row));
+        }
+        
+        $normalizedRow = [];
+        foreach ($row as $key => $value) {
+            $normalizedRow[strtolower( (string) $key)] = $value;
+        }
+        
+        $playerId = $normalizedRow['id'] ?? null;
+        $playerName = $normalizedRow['nome'] ?? null;
+        
+        if ($playerId === null || $playerName === null) {
+            Log::warning('TuttiHistoricalStatsImport@model: RIGA SALTATA (Excel file row #' . ($this->rowDataRowCount + $this->headingRow()) . ') per mancanza di "id" o "nome". Dati Normalizzati: ' . json_encode($normalizedRow) );
+            return null; // Salta questa riga
+        }
+        
+        $this->processedCount++; // Incrementa solo se la riga ha id e nome
+        
+        $playerId = trim((string)$playerId);
+        $playerName = trim((string)$playerName);
+        
+        $classicRole = null;
+        $mantraRoleValueToStore = null;
+        
+        if (isset($normalizedRow['r'])) {
+            $r_value_from_row = $normalizedRow['r'];
+            $rValueAsString = trim((string)$r_value_from_row);
+            if ($rValueAsString !== '') {
+                if (is_numeric($rValueAsString)) {
+                    $rNumericValue = (int)$rValueAsString;
+                    if (array_key_exists($rNumericValue, self::CLASSIC_ROLE_MAP)) {
+                        $classicRole = self::CLASSIC_ROLE_MAP[$rNumericValue];
+                    } else {
+                        Log::warning('TuttiHistoricalStatsImport@model: Player ID ' . $playerId . ' - Valore numerico "r" (' . $rNumericValue . ') NON TROVATO in CLASSIC_ROLE_MAP. ClassicRole impostato a NULL.');
+                    }
+                } else {
+                    $rawRUpper = strtoupper($rValueAsString);
+                    if (in_array($rawRUpper, ['P', 'D', 'C', 'A'])) {
+                        $classicRole = $rawRUpper;
+                    } else {
+                        Log::warning('TuttiHistoricalStatsImport@model: Player ID ' . $playerId . ' - Valore "r" non standard e non numerico (' . $rValueAsString . '). ClassicRole impostato a NULL.');
+                    }
+                }
             }
-            
-            $classicRole = null;
-            $mantraRoleValueToStore = null;
-            
-            if (isset($row['rm'])) {
-                $rawRmValue = trim((string)$row['rm']);
-                
-                // Store Mantra role: as JSON array if multiple, else as string
+        }
+        
+        if (isset($normalizedRow['rm'])) {
+            $rawRmValue = trim((string)$normalizedRow['rm']);
+            if (!empty($rawRmValue)) {
                 if (strpos($rawRmValue, ';') !== false) {
                     $mantraRolesArray = array_map('trim', explode(';', $rawRmValue));
-                    $mantraRoleValueToStore = json_encode($mantraRolesArray);
+                    $mantraRolesArray = array_filter($mantraRolesArray, fn($value) => $value !== '');
+                    if (!empty($mantraRolesArray)) {
+                        $mantraRoleValueToStore = json_encode(array_values($mantraRolesArray));
+                    }
                 } else {
-                    $mantraRoleValueToStore = $rawRmValue; // Singolo ruolo Mantra
+                    $mantraRoleValueToStore = $rawRmValue;
                 }
-                
-                $rmNormalizedForSwitch = strtoupper($rawRmValue);
-                
-                // Mappatura da Rm (valore completo) a Ruolo Classic (P,D,C,A)
-                switch ($rmNormalizedForSwitch) {
-                    case 'POR': $classicRole = 'P'; break;
-                    // DIFENSORI
-                    case 'E': case 'DD;DS;E': case 'DC': case 'B;DD;E': case 'DS;E':
-                    case 'DD;E': case 'DS;DC': case 'DD;DC': case 'B;DS;E':
-                    case 'B;DD;DS': case 'DD;DS;DC':
-                        $classicRole = 'D'; break;
-                        // CENTROCAMPISTI
-                    case 'W': case 'M;C': case 'C': case 'T': case 'C;T':
-                    case 'W;T': case 'C;W': case 'E;W': case 'E;C': case 'C;W;T':
-                    case 'E;M': // Mappato a C (era ambiguo nella tua lista, C è più comune per E;M)
-                        $classicRole = 'C'; break;
-                        // ATTACCANTI
-                    case 'PC': case 'A':
-                    case 'T;A': // Mappato ad A (era C nella tua lista, ma T;A è spesso A)
-                    case 'W;A': // Mappato ad A (era C nella tua lista, ma W;A è spesso A)
-                    case 'W;T;A': // Mappato ad A (era C nella tua lista, ma W;T;A è spesso A)
-                        $classicRole = 'A'; break;
-                    default:
-                        Log::warning('TuttiHistoricalStatsImport@model: Valore RM "' . $rawRmValue . '" non mappato a Ruolo Classic per giocatore ' . ($row['nome'] ?? 'N/D') . '. Classic Role impostato a NULL.');
-                        $classicRole = null;
-                }
-            } else {
-                // Fallback se 'rm' non esiste (basandoci sui log, 'r' potrebbe contenere 0 o altri codici)
-                // Quindi, se 'rm' manca, probabilmente non possiamo derivare un ruolo Classic affidabile.
-                Log::warning('TuttiHistoricalStatsImport@model: Chiave "rm" mancante per giocatore ' . ($row['nome'] ?? 'N/D') . '. Ruoli impostati a NULL.');
             }
-            
-            Log::info('Per Giocatore ID ' . $row['id'] . ' (' . $row['nome'] . '): ClassicRole derivato: ' . ($classicRole ?? 'NULL') . ', MantraRole da salvare: ' . ($mantraRoleValueToStore ?? 'NULL'));
-            
-            // CHIAVI CONFERMATE DAI LOG: ["id","r","rm","nome","squadra","pv","mv","fm","gf","gs","rp","rc","ass","amm","esp","au"]
-            $dataToInsert = [
-                'player_fanta_platform_id' => $row['id'],
-                'season_year'              => $this->seasonYearToImport,
-                'team_name_for_season'     => $row['squadra'] ?? null,
-                'role_for_season'          => $classicRole,
-                'mantra_role_for_season'   => $mantraRoleValueToStore,
-                'games_played'             => $row['pv'] ?? 0,
-                'avg_rating'               => isset($row['mv']) && trim((string)$row['mv']) !== '' ? (float)str_replace(',', '.', (string)$row['mv']) : null,
-                'fanta_avg_rating'         => isset($row['fm']) && trim((string)$row['fm']) !== '' ? (float)str_replace(',', '.', (string)$row['fm']) : null,
-                'goals_scored'             => $row['gf'] ?? 0,
-                'goals_conceded'           => $row['gs'] ?? 0,
-                'penalties_saved'          => $row['rp'] ?? 0,
-                'penalties_taken'          => $row['rc'] ?? 0,
-                'assists'                  => $row['ass'] ?? 0,
-                'yellow_cards'             => $row['amm'] ?? 0,
-                'red_cards'                => $row['esp'] ?? 0,
-                'own_goals'                => $row['au'] ?? 0,
-                // R+, R-, Asf non sono nelle chiavi Excel loggate, quindi le ometto da $dataToInsert.
-                // Se le tue colonne si chiamano diversamente, aggiorna le chiavi $row['...']
-            ];
-            
-            return HistoricalPlayerStat::updateOrCreate(
+        }
+        
+        // Log::info('Player ID ' . $playerId . ' (' . $playerName . '): ClassicRole finale: ' . ($classicRole ?? 'NULL') . ', MantraRole da salvare: ' . ($mantraRoleValueToStore ?? 'NULL'));
+        
+        $dataToInsert = [ /* ... come prima ... */
+            'player_fanta_platform_id' => (int)$playerId,
+            'season_year'              => $this->seasonYearToImport,
+            'team_name_for_season'     => isset($normalizedRow['squadra']) ? trim((string)$normalizedRow['squadra']) : null,
+            'role_for_season'          => $classicRole,
+            'mantra_role_for_season'   => $mantraRoleValueToStore,
+            'games_played'             => isset($normalizedRow['pv']) && is_numeric($normalizedRow['pv']) ? (int)$normalizedRow['pv'] : 0,
+            'avg_rating'               => isset($normalizedRow['mv']) && trim((string)$normalizedRow['mv']) !== '' ? (float)str_replace(',', '.', (string)$normalizedRow['mv']) : null,
+            'fanta_avg_rating'         => isset($normalizedRow['fm']) && trim((string)$normalizedRow['fm']) !== '' ? (float)str_replace(',', '.', (string)$normalizedRow['fm']) : null,
+            'goals_scored'             => isset($normalizedRow['gf']) && is_numeric($normalizedRow['gf']) ? (int)$normalizedRow['gf'] : 0,
+            'goals_conceded'           => isset($normalizedRow['gs']) && is_numeric($normalizedRow['gs']) ? (int)$normalizedRow['gs'] : 0,
+            'penalties_saved'          => isset($normalizedRow['rp']) && is_numeric($normalizedRow['rp']) ? (int)$normalizedRow['rp'] : 0,
+            'penalties_taken'          => isset($normalizedRow['rc']) && is_numeric($normalizedRow['rc']) ? (int)$normalizedRow['rc'] : 0,
+            'penalties_scored'         => isset($normalizedRow['r+']) && is_numeric($normalizedRow['r+']) ? (int)$normalizedRow['r+'] : 0,
+            'penalties_missed'         => isset($normalizedRow['r-']) && is_numeric($normalizedRow['r-']) ? (int)$normalizedRow['r-'] : 0,
+            'assists'                  => isset($normalizedRow['ass']) && is_numeric($normalizedRow['ass']) ? (int)$normalizedRow['ass'] : 0,
+            'yellow_cards'             => isset($normalizedRow['amm']) && is_numeric($normalizedRow['amm']) ? (int)$normalizedRow['amm'] : 0,
+            'red_cards'                => isset($normalizedRow['esp']) && is_numeric($normalizedRow['esp']) ? (int)$normalizedRow['esp'] : 0,
+            'own_goals'                => isset($normalizedRow['au']) && is_numeric($normalizedRow['au']) ? (int)$normalizedRow['au'] : 0,
+        ];
+        
+        try {
+            $historicalStat = HistoricalPlayerStat::updateOrCreate(
                 [
                     'player_fanta_platform_id' => $dataToInsert['player_fanta_platform_id'],
                     'season_year'              => $dataToInsert['season_year'],
@@ -116,10 +143,27 @@ class TuttiHistoricalStatsImport implements ToModel, WithHeadingRow, SkipsOnErro
                 ],
                 $dataToInsert
                 );
+            
+            if ($historicalStat->wasRecentlyCreated) {
+                $this->createdCount++;
+            } elseif ($historicalStat->wasChanged()) {
+                $this->updatedCount++;
+            }
+            return $historicalStat;
+            
+        } catch (Throwable $dbException) {
+            Log::error('TuttiHistoricalStatsImport@model DB EXCEPTION for player ID ' . $playerId . ' (' . $playerName . '): ' . $dbException->getMessage() . ' --- Data: ' . json_encode($dataToInsert) . ' --- Trace: ' . substr($dbException->getTraceAsString(),0, 500));
+            throw $dbException;
+        }
     }
     
     public function onError(Throwable $e)
     {
-        Log::error('TuttiHistoricalStatsImport@onError: Errore importazione riga statistiche (saltata). Messaggio: ' . $e->getMessage());
+        Log::error('TuttiHistoricalStatsImport@onError: Errore durante processamento riga (saltata). Messaggio: ' . $e->getMessage());
     }
+    
+    // Metodi Getter per i contatori
+    public function getProcessedCount(): int { return $this->processedCount; }
+    public function getCreatedCount(): int { return $this->createdCount; }
+    public function getUpdatedCount(): int { return $this->updatedCount; }
 }

@@ -3,28 +3,33 @@
 namespace App\Imports;
 
 use Maatwebsite\Excel\Concerns\WithMultipleSheets;
+use Maatwebsite\Excel\Concerns\SkipsUnknownSheets; // Aggiunto
 
-class MainRosterImport implements WithMultipleSheets
+class MainRosterImport implements WithMultipleSheets, SkipsUnknownSheets
 {
-    /**
-     * Il costruttore non ha bisogno di parametri se TuttiSheetImport
-     * definisce autonomamente la sua riga di intestazione.
-     */
+    private TuttiSheetImport $tuttiSheetImporter; // Proprietà per tenere l'istanza
+    
     public function __construct()
     {
+        // Istanzia l'importer del foglio qui
+        $this->tuttiSheetImporter = new TuttiSheetImport();
     }
     
-    /**
-     * Specifica quale importer usare per ogni foglio.
-     * In questo caso, solo il foglio 'Tutti' ci interessa.
-     *
-     * @return array
-     */
     public function sheets(): array
     {
         return [
-            // La chiave 'Tutti' deve corrispondere esattamente al nome del foglio nel file Excel (sensibile a maiuscole/minuscole).
-            'Tutti' => new TuttiSheetImport(),
+            'Tutti' => $this->tuttiSheetImporter, // Usa l'istanza
         ];
+    }
+    
+    // Metodo per recuperare l'istanza dell'importer del foglio
+    public function getTuttiSheetImporter(): TuttiSheetImport
+    {
+        return $this->tuttiSheetImporter;
+    }
+    
+    public function onUnknownSheet($sheetName)
+    {
+        Log::info("MainRosterImport: Foglio sconosciuto '$sheetName' ignorato.");
     }
 }
