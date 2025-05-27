@@ -3,6 +3,7 @@
 namespace App\Imports;
 
 use App\Models\HistoricalPlayerStat;
+use App\Models\Team; // Importa il modello Team
 use Illuminate\Support\Facades\Log;
 use Maatwebsite\Excel\Concerns\ToModel;
 use Maatwebsite\Excel\Concerns\WithHeadingRow;
@@ -13,10 +14,9 @@ class TuttiHistoricalStatsImport implements ToModel, WithHeadingRow, SkipsOnErro
 {
     private string $seasonYearToImport;
     private static bool $keysLoggedForHistoricalImport = false;
-    private int $rowDataRowCount = 0; // Contatore per le righe di dati lette da Excel
+    private int $rowDataRowCount = 0;
     
-    // Contatori per ImportLog
-    public int $processedCount = 0; // Righe valide che iniziano il processo di model()
+    public int $processedCount = 0;
     public int $createdCount = 0;
     public int $updatedCount = 0;
     
@@ -29,7 +29,6 @@ class TuttiHistoricalStatsImport implements ToModel, WithHeadingRow, SkipsOnErro
         $this->seasonYearToImport = $seasonYear;
         self::$keysLoggedForHistoricalImport = false;
         $this->rowDataRowCount = 0;
-        // Inizializza i contatori
         $this->processedCount = 0;
         $this->createdCount = 0;
         $this->updatedCount = 0;
@@ -42,38 +41,53 @@ class TuttiHistoricalStatsImport implements ToModel, WithHeadingRow, SkipsOnErro
     
     public function model(array $row)
     {
-        $this->rowDataRowCount++; // Incrementa per ogni riga letta da Excel dopo l'intestazione
+        $this->rowDataRowCount++;
         
         if (!self::$keysLoggedForHistoricalImport && !empty($row)) {
             Log::info('TuttiHistoricalStatsImport@model: CHIAVI RICEVUTE (dalla riga d\'intestazione Excel #' . $this->headingRow() . '): ' . json_encode(array_keys($row)));
             self::$keysLoggedForHistoricalImport = true;
         }
         
-        if ($this->rowDataRowCount <= 3 || $this->rowDataRowCount % 100 == 0) {
-            Log::info('TuttiHistoricalStatsImport@model: Processing Excel data row #' . $this->rowDataRowCount . ' (Excel file row #' . ($this->rowDataRowCount + $this->headingRow()) . ') Data: ' . json_encode($row));
-        }
+        // Non loggare ogni riga in produzione
+        // if ($this->rowDataRowCount <= 3 || $this->rowDataRowCount % 100 == 0) {
+        //     Log::info('TuttiHistoricalStatsImport@model: Processing Excel data row #' . $this->rowDataRowCount . ' (Excel file row #' . ($this->rowDataRowCount + $this->headingRow()) . ') Data: ' . json_encode($row));
+        // }
         
         $normalizedRow = [];
         foreach ($row as $key => $value) {
-            $normalizedRow[strtolower( (string) $key)] = $value;
+            $normalizedKey = strtolower( (string) $key);
+            $normalizedKey = preg_replace('/[\s.]+/', '_', $normalizedKey);
+            if ($normalizedKey === 'r_') {
+                if (str_ends_with(strtolower( (string) $key), '+')) $normalizedKey = 'r+';
+                if (str_ends_with(strtolower( (string) $key), '-')) $normalizedKey = 'r-';
+            }
+            $normalizedRow[$normalizedKey] = $value;
         }
         
         $playerId = $normalizedRow['id'] ?? null;
         $playerName = $normalizedRow['nome'] ?? null;
         
-        if ($playerId === null || $playerName === null) {
-            Log::warning('TuttiHistoricalStatsImport@model: RIGA SALTATA (Excel file row #' . ($this->rowDataRowCount + $this->headingRow()) . ') per mancanza di "id" o "nome". Dati Normalizzati: ' . json_encode($normalizedRow) );
-            return null; // Salta questa riga
+        if ($playerId === null || $playerName === null || trim((string)$playerName) === '') {
+            Log::warning('TuttiHistoricalStatsImport@model: RIGA SALTATA (Excel file row #' . ($this->rowDataRowCount + $this->headingRow()) . ') per mancanza di "id" o "nome". Dati Normalizzati: ' . json_encode($normalizedRow));
+            return null;
         }
         
-        $this->processedCount++; // Incrementa solo se la riga ha id e nome
-        
+        $this->processedCount++;
         $playerId = trim((string)$playerId);
         $playerName = trim((string)$playerName);
         
-        $classicRole = null;
-        $mantraRoleValueToStore = null;
+        $teamName = isset($normalizedRow['squadra']) ? trim((string)$normalizedRow['squadra']) : null;
+        $teamId = null;
+        if ($teamName) {
+            $team = Team::where('name', $teamName)->first();
+            if ($team) {
+                $teamId = $team->id;
+            } else {
+                Log::warning('TuttiHistoricalStatsImport@model (Stats): Squadra "' . $teamName . '" non trovata nel DB per stats giocatore ID ' . $playerId . '. team_id sarà NULL. Il nome originale "' . $teamName . '" verrà usato per team_name_for_season.');
+            }
+        }
         
+        $classicRole = null;
         if (isset($normalizedRow['r'])) {
             $r_value_from_row = $normalizedRow['r'];
             $rValueAsString = trim((string)$r_value_from_row);
@@ -83,19 +97,20 @@ class TuttiHistoricalStatsImport implements ToModel, WithHeadingRow, SkipsOnErro
                     if (array_key_exists($rNumericValue, self::CLASSIC_ROLE_MAP)) {
                         $classicRole = self::CLASSIC_ROLE_MAP[$rNumericValue];
                     } else {
-                        Log::warning('TuttiHistoricalStatsImport@model: Player ID ' . $playerId . ' - Valore numerico "r" (' . $rNumericValue . ') NON TROVATO in CLASSIC_ROLE_MAP. ClassicRole impostato a NULL.');
+                        // Log::warning('TuttiHistoricalStatsImport@model: Player ID ' . $playerId . ' - Valore numerico "r" (' . $rNumericValue . ') NON TROVATO in CLASSIC_ROLE_MAP. ClassicRole impostato a NULL.');
                     }
                 } else {
                     $rawRUpper = strtoupper($rValueAsString);
                     if (in_array($rawRUpper, ['P', 'D', 'C', 'A'])) {
                         $classicRole = $rawRUpper;
                     } else {
-                        Log::warning('TuttiHistoricalStatsImport@model: Player ID ' . $playerId . ' - Valore "r" non standard e non numerico (' . $rValueAsString . '). ClassicRole impostato a NULL.');
+                        // Log::warning('TuttiHistoricalStatsImport@model: Player ID ' . $playerId . ' - Valore "r" non standard e non numerico (' . $rValueAsString . '). ClassicRole impostato a NULL.');
                     }
                 }
             }
         }
         
+        $mantraRoleValueToStore = null;
         if (isset($normalizedRow['rm'])) {
             $rawRmValue = trim((string)$normalizedRow['rm']);
             if (!empty($rawRmValue)) {
@@ -113,10 +128,11 @@ class TuttiHistoricalStatsImport implements ToModel, WithHeadingRow, SkipsOnErro
         
         // Log::info('Player ID ' . $playerId . ' (' . $playerName . '): ClassicRole finale: ' . ($classicRole ?? 'NULL') . ', MantraRole da salvare: ' . ($mantraRoleValueToStore ?? 'NULL'));
         
-        $dataToInsert = [ /* ... come prima ... */
+        $dataToInsert = [
             'player_fanta_platform_id' => (int)$playerId,
             'season_year'              => $this->seasonYearToImport,
-            'team_name_for_season'     => isset($normalizedRow['squadra']) ? trim((string)$normalizedRow['squadra']) : null,
+            'team_id'                  => $teamId,
+            'team_name_for_season'     => $teamName, // **CORREZIONE: Popola team_name_for_season**
             'role_for_season'          => $classicRole,
             'mantra_role_for_season'   => $mantraRoleValueToStore,
             'games_played'             => isset($normalizedRow['pv']) && is_numeric($normalizedRow['pv']) ? (int)$normalizedRow['pv'] : 0,
@@ -135,18 +151,38 @@ class TuttiHistoricalStatsImport implements ToModel, WithHeadingRow, SkipsOnErro
         ];
         
         try {
-            $historicalStat = HistoricalPlayerStat::updateOrCreate(
-                [
-                    'player_fanta_platform_id' => $dataToInsert['player_fanta_platform_id'],
-                    'season_year'              => $dataToInsert['season_year'],
-                    'team_name_for_season'     => $dataToInsert['team_name_for_season'],
-                ],
-                $dataToInsert
-                );
+            // Chiave per updateOrCreate: assicurati che rifletta l'unicità desiderata.
+            // Se team_name_for_season non fa più parte della chiave univoca perché team_id è primario,
+            // allora la chiave qui dovrebbe essere basata su player_fanta_platform_id, season_year, team_id.
+            // Tuttavia, se team_id può essere null (squadra non trovata), usare team_id nella chiave univoca
+            // potrebbe non essere ideale. Bisogna decidere la strategia.
+            // Per ora, manteniamo la chiave originale che usava team_name_for_season se la tua migrazione la mantiene.
+            // Se hai rimosso team_name_for_season dalla tabella, devi usare team_id qui.
+            // Assumendo che team_name_for_season sia ancora nella tabella e parte della chiave univoca:
+            $uniqueKeys = [
+                'player_fanta_platform_id' => $dataToInsert['player_fanta_platform_id'],
+                'season_year'              => $dataToInsert['season_year'],
+            ];
+            // Se team_name_for_season è ancora una colonna e fa parte della chiave univoca
+            if (array_key_exists('team_name_for_season', $dataToInsert)) {
+                $uniqueKeys['team_name_for_season'] = $dataToInsert['team_name_for_season'];
+            } else if (array_key_exists('team_id', $dataToInsert)) { // Altrimenti usa team_id se team_name_for_season è stato rimosso
+                $uniqueKeys['team_id'] = $dataToInsert['team_id'];
+            }
+            
+            
+            $historicalStat = HistoricalPlayerStat::updateOrCreate($uniqueKeys, $dataToInsert);
+            
+            $isDirtyExceptTimestamps = false;
+            if (!$historicalStat->wasRecentlyCreated) {
+                $changes = $historicalStat->getChanges();
+                if (isset($changes['updated_at'])) unset($changes['updated_at']);
+                if (!empty($changes)) $isDirtyExceptTimestamps = true;
+            }
             
             if ($historicalStat->wasRecentlyCreated) {
                 $this->createdCount++;
-            } elseif ($historicalStat->wasChanged()) {
+            } elseif ($isDirtyExceptTimestamps) {
                 $this->updatedCount++;
             }
             return $historicalStat;
@@ -159,10 +195,9 @@ class TuttiHistoricalStatsImport implements ToModel, WithHeadingRow, SkipsOnErro
     
     public function onError(Throwable $e)
     {
-        Log::error('TuttiHistoricalStatsImport@onError: Errore durante processamento riga (saltata). Messaggio: ' . $e->getMessage());
+        Log::error('TuttiHistoricalStatsImport@onError: ' . $e->getMessage());
     }
     
-    // Metodi Getter per i contatori
     public function getProcessedCount(): int { return $this->processedCount; }
     public function getCreatedCount(): int { return $this->createdCount; }
     public function getUpdatedCount(): int { return $this->updatedCount; }

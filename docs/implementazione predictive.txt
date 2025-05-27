@@ -1,0 +1,34 @@
+--- SEZIONE 4.2 AGGIORNATA (parte) ---
+4.2. Logica di Calcolo delle Proiezioni
+L'implementazione iniziale del ProjectionEngineService prevede:
+* **Recupero Dati Storici**: Caricamento delle statistiche delle ultime N stagioni disponibili per il giocatore.
+* **Ponderazione Stagionale**: Applicazione di pesi decrescenti alle stagioni più vecchie (es. 50% stagione più recente, 33% la precedente, 17% la terzultima) per dare più importanza alla forma attuale.
+* **Calcolo Medie Ponderate per Partita**: Calcolo delle medie ponderate per le statistiche chiave (MV, gol/partita, assist/partita, ammonizioni/partita, ecc.).
+* **Stima Presenze Attese**:
+    * Calcolo della media ponderata delle partite giocate storicamente (`avg_games_played`).
+    * Applicazione di un moltiplicatore basato sul `tier` della squadra attuale del giocatore (es. squadre di Tier 1 potrebbero garantire più presenze ai titolari).
+    * Limitazione del risultato tra un minimo (es. 1) e un massimo (es. 38) di partite.
+* **Aggiustamento Statistiche per Contesto Squadra (Tier)**:
+    * Le statistiche offensive (gol, assist) calcolate come medie per partita vengono moltiplicate per un `tierMultiplier` (es. >1 per squadre forti, <1 per squadre deboli).
+    * Le altre statistiche (es. cartellini) al momento non sono influenzate dal `tierMultiplier` in questa fase di aggiustamento (vengono solo scalate per le presenze).
+* **Scaling per Presenze Attese**: Le medie per partita aggiustate vengono moltiplicate per le `presenze_attese` per ottenere le proiezioni totali stagionali.
+* **Calcolo FantaMedia Proiettata**: Le statistiche totali proiettate vengono passate al `FantasyPointCalculatorService` insieme alle regole di punteggio della lega per calcolare la FantaMedia.
+* **Sviluppi Futuri per la Logica di Proiezione**:
+    * Implementazione della proiezione delle "clean sheet" per portieri e difensori.
+    * Aggiustamenti specifici per età e curva di rendimento del giocatore.
+    * Modulazione più raffinata dell'impatto del `tier` della squadra su diverse statistiche (es. gol subiti per portieri).
+    * Analisi e proiezione della "rigoristicità" basata su dati storici (Rc, R+).
+    * Considerazione della regressione verso la media.
+
+--- SEZIONE 7.2 AGGIORNATA ---
+7.2. Servizi Chiave
+* RosterImportService: (Logica attualmente integrata nei Controller e nelle classi Import di Maatwebsite/Excel) Per parsing e importazione del file XLSX del roster e delle quotazioni.
+* HistoricalStatsImportService: (Logica attualmente integrata nei Controller e nelle classi Import di Maatwebsite/Excel) Per parsing e importazione dei file XLSX delle statistiche storiche.
+* DataEnrichmentService: (Da implementare) Per recuperare e abbinare dati qualitativi (es. da `PlayerTacticalNotes`) e, in futuro, statistiche avanzate.
+* **FantasyPointCalculatorService**: Implementato (vedi `app/Services/FantasyPointCalculatorService.php`). Responsabile del calcolo dei fantapunti totali basandosi su un set di statistiche di un giocatore (es. MV, gol, assist, ammonizioni, ecc.) e le regole di punteggio definite nel profilo lega dell'utente. (Canvas: `service_fantasy_point_calculator_v3_float_fix`)
+* **ProjectionEngineService**: Implementazione iniziale creata (vedi `app/Services/ProjectionEngineService.php`). Responsabile della generazione delle proiezioni statistiche per i giocatori. Attualmente include il caricamento delle statistiche storiche, il calcolo di medie ponderate, una stima preliminare delle presenze attese, un primo aggiustamento per il `tier` della squadra e l'utilizzo del `FantasyPointCalculatorService`. (Canvas: `service_projection_engine` con modifiche da `test_player_projection_command_v2`)
+* AuctionValueCalculatorService: (Da implementare) Calcola il "Valore d'Asta Interno".
+* PlayerTieringService: (Da implementare) Assegna i giocatori alle fasce.
+* AuctionStrategyBuilderService: (Da implementare) Assiste nella creazione del piano d'asta e gestione budget.
+* PairAnalyzerService: (Da implementare) Per la valutazione delle "coppie".
+* TeamConcentrationService: (Da implementare) Per il monitoraggio della diversificazione.

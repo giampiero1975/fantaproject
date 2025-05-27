@@ -1,29 +1,17 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Carica Rosa Ufficiale</title>
-</head>
-<body>
-    <h1>Carica File Rosa Ufficiale (XLSX)</h1>
+@extends('layouts.app')
 
-    @if (session('success'))
-        <div style="color: green;">{{ session('success') }}</div>
-    @endif
+@section('title', 'Carica File Rosa Ufficiale')
 
-    @if ($errors->any())
-        <div style="color: red;">
-            <ul>
-                @foreach ($errors->all() as $error)
-                    <li>{{ $error }}</li>
-                @endforeach
-            </ul>
-        </div>
-    @endif
+@section('content')
+    {{-- Rimosso il blocco @if (session('success')) e @if ($errors->any()) perché gestito nel layout --}}
+    {{-- Il titolo H1 è ora gestito dalla sezione @yield('header') nel layout o dal @section('title') --}}
 
     <form action="{{ route('roster.upload') }}" method="POST" enctype="multipart/form-data">
         @csrf
-        <input type="file" name="roster_file" required>
-        <button type="submit">Carica File</button>
+        <p>
+            <label for="roster_file">Seleziona il file XLSX del roster ufficiale:</label><br>
+            <input type="file" name="roster_file" id="roster_file" required>
+        </p>
+        <button type="submit">Carica File Roster</button>
     </form>
-</body>
-</html>
+@endsection

@@ -12,6 +12,7 @@ class HistoricalPlayerStat extends Model
     protected $fillable = [
         'player_fanta_platform_id',
         'season_year',
+        'team_id',
         'team_name_for_season',     // O il nome esatto che hai usato nella migrazione
         'role_for_season',          // Ruolo Classic (P, D, C, A)
         'mantra_role_for_season',   // <-- DEVE ESSERE QUI!
@@ -30,4 +31,14 @@ class HistoricalPlayerStat extends Model
         'red_cards',
         'own_goals',
     ];
+    
+    public function team()
+    {
+        return $this->belongsTo(Team::class); // Usa la FK team_id
+    }
+    
+    public function player() // Relazione utile
+    {
+        return $this->belongsTo(Player::class, 'player_fanta_platform_id', 'fanta_platform_id');
+    }
 }

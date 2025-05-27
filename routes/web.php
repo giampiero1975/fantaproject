@@ -3,6 +3,7 @@
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\RosterImportController;
 use App\Http\Controllers\HistoricalStatsImportController;
+use App\Http\Controllers\UserLeagueProfileController; // Controller importato
 /*
 |--------------------------------------------------------------------------
 | Web Routes
@@ -24,6 +25,10 @@ Route::post('/upload/roster', [RosterImportController::class, 'handleUpload'])->
 Route::get('/upload/historical-stats', [HistoricalStatsImportController::class, 'showUploadForm'])->name('historical_stats.show_upload_form');
 Route::post('/upload/historical-stats', [HistoricalStatsImportController::class, 'handleUpload'])->name('historical_stats.handle_upload');
 
+// Rotte per il Profilo Lega Utente
+Route::get('/league/profile', [UserLeagueProfileController::class, 'edit'])->name('league.profile.edit');
+Route::post('/league/profile', [UserLeagueProfileController::class, 'update'])->name('league.profile.update');
+
 Route::get('/', function () {
     return view('welcome');
-});
+})->name('welcome'); // Aggiungi un nome alla rotta principale
