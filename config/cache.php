@@ -106,5 +106,8 @@ return [
     */
 
     'prefix' => env('CACHE_PREFIX', Str::slug(env('APP_NAME', 'laravel'), '_').'_cache'),
+    
+    'ttl_api_squad' => env('CACHE_TTL_API_SQUAD_HOURS', 1), // Ore
+    'ttl_api_teams' => env('CACHE_TTL_API_TEAMS_DAYS', 1), // Giorni
 
 ];

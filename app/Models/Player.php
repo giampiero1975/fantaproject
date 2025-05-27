@@ -4,38 +4,45 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Database\Eloquent\SoftDeletes; // Assicurati sia usato se la tua tabella lo supporta
 
 class Player extends Model
 {
-    use HasFactory;
-    use SoftDeletes;
+    use HasFactory, SoftDeletes; // SoftDeletes era già presente
     
     protected $fillable = [
         'fanta_platform_id',
         'name',
-        'team_name', // **CORREZIONE: Assicurati che team_name sia qui**
+        'team_name',         // Mantienilo se lo usi ancora per il matching iniziale o display
         'team_id',
         'role',
-        'initial_quotation',
-        'current_quotation',
+        'initial_quotation', // Corretto da 'initial_value' se il nome colonna è questo
+        'current_quotation', // Corretto da 'current_value' se il nome colonna è questo
         'fvm',
+        'date_of_birth',        // NUOVO
+        'detailed_position',    // NUOVO
+        'api_football_data_id', // NUOVO
+        'api_football_data_team_id'
     ];
     
     /**
-     * The table associated with the model.
+     * The attributes that should be cast.
      *
-     * @var string
+     * @var array
      */
-    protected $table = 'players';
+    protected $casts = [
+        'date_of_birth' => 'date', // NUOVO
+        // Assicurati che gli altri cast siano corretti per le tue colonne
+        'initial_quotation' => 'integer',
+        'current_quotation' => 'integer',
+        'fvm' => 'integer',
+    ];
     
     /**
      * Get the team that owns the player.
      */
     public function team()
     {
-        // Questa relazione userà la colonna 'team_id' per default
-        // se la foreign key in 'players' è 'team_id'
         return $this->belongsTo(Team::class);
     }
     
@@ -44,8 +51,6 @@ class Player extends Model
      */
     public function historicalStats()
     {
-        // Assumendo che 'fanta_platform_id' sia la chiave primaria in 'players' (o una chiave univoca usata per la relazione)
-        // e 'player_fanta_platform_id' sia la foreign key in 'historical_player_stats'
         return $this->hasMany(HistoricalPlayerStat::class, 'player_fanta_platform_id', 'fanta_platform_id');
     }
 }

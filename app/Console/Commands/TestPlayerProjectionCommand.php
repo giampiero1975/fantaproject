@@ -92,10 +92,16 @@ class TestPlayerProjectionCommand extends Command
         $this->info("Proiezioni generate per {$player->name}:");
         $this->line(json_encode($projections, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
         
-        if (isset($projections['fanta_media_proj'])) {
-            $this->info("FantaMedia Proiettata: " . $projections['fanta_media_proj']);
+        if (isset($projections['fanta_media_proj_per_game'])) { // NUOVA CHIAVE
+            $this->info("FantaMedia Proiettata PER PARTITA: " . $projections['fanta_media_proj_per_game']);
+            if (isset($projections['total_fantasy_points_proj'])) {
+                $this->info("Fantapunti totali stagionali proiettati: " . $projections['total_fantasy_points_proj']);
+            }
+            if (isset($projections['presenze_proj'])) {
+                $this->info("Presenze proiettate: " . $projections['presenze_proj']);
+            }
         } else {
-            $this->warn("FantaMedia Proiettata non presente nell'output.");
+            $this->warn("Chiave 'fanta_media_proj_per_game' non presente nell'output delle proiezioni.");
         }
         
         return Command::SUCCESS;
