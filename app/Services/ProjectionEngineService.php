@@ -4,29 +4,37 @@ namespace App\Services;
 
 use App\Models\Player;
 use App\Models\HistoricalPlayerStat;
-use App\Models\Team; // Assicurati sia importato se lo usi direttamente qui, altrimenti Player->team è sufficiente
+use App\Models\Team;
 use App\Models\UserLeagueProfile;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Collection;
+use Carbon\Carbon;
 
 class ProjectionEngineService
 {
     protected FantasyPointCalculatorService $pointCalculator;
     
+    // Parametri per la logica dei rigoristi
+    protected int $penaltyTakerLookbackSeasons;
+    protected int $minPenaltiesTakenThreshold;
+    protected float $leagueAvgPenaltiesAwardedPerTeamGame;
+    protected float $penaltyTakerShareOfTeamPenalties;
+    protected float $defaultPenaltyConversionRate;
+    
     public function __construct(FantasyPointCalculatorService $pointCalculator)
     {
         $this->pointCalculator = $pointCalculator;
+        
+        // Carica i parametri da un file di configurazione o usa valori di default
+        // Esempio: config/projection_settings.php
+        $this->penaltyTakerLookbackSeasons = Config::get('projection_settings.penalty_taker_lookback_seasons', 2);
+        $this->minPenaltiesTakenThreshold = Config::get('projection_settings.min_penalties_taken_threshold', 3);
+        $this->leagueAvgPenaltiesAwardedPerTeamGame = Config::get('projection_settings.league_avg_penalties_awarded', 0.20); // Esempio: 1 rigore ogni 5 partite per squadra
+        $this->penaltyTakerShareOfTeamPenalties = Config::get('projection_settings.penalty_taker_share', 0.85);   // Esempio: il rigorista designato calcia l'85%
+        $this->defaultPenaltyConversionRate = Config::get('projection_settings.default_penalty_conversion_rate', 0.75); // Tasso di conversione di default
     }
     
-    /**
-     * Genera le proiezioni statistiche per un singolo giocatore, inclusa la FantaMedia proiettata per partita.
-     *
-     * @param Player $player Il giocatore per cui generare le proiezioni.
-     * @param UserLeagueProfile $leagueProfile Il profilo della lega dell'utente con le regole.
-     * @param int $numberOfSeasonsToConsider Numero di stagioni storiche da considerare.
-     * @param array $seasonWeights Pesi per le stagioni (es. [0.5, 0.3, 0.2] per le ultime 3, la più recente prima).
-     * @return array Un array contenente le proiezioni.
-     */
     public function generatePlayerProjection(
         Player $player,
         UserLeagueProfile $leagueProfile,
@@ -35,56 +43,55 @@ class ProjectionEngineService
         ): array {
             Log::info("ProjectionEngineService: Inizio proiezioni per giocatore ID {$player->fanta_platform_id} ({$player->name})");
             
-            $historicalStats = HistoricalPlayerStat::where('player_fanta_platform_id', $player->fanta_platform_id)
-            ->orderBy('season_year', 'desc') // Dalla più recente alla più vecchia
-            ->take($numberOfSeasonsToConsider)
-            ->get();
+            $historicalStatsQuery = HistoricalPlayerStat::where('player_fanta_platform_id', $player->fanta_platform_id)
+            ->orderBy('season_year', 'desc');
             
-            if ($historicalStats->isEmpty()) {
-                Log::warning("ProjectionEngineService: Nessuna statistica storica trovata per giocatore ID {$player->fanta_platform_id}. Utilizzo proiezioni di default per ruolo.");
-                // Gestisci il caso di nessuna statistica: calcola una FM di default per partita
-                $defaultStatsPerGame = $this->getDefaultStatsPerGameForRole($player->role, $player->team ? $player->team->tier : null); //
+            // Stats per analisi rigoristi (ultime N stagioni definite da config)
+            $allHistoricalStatsForPenaltyAnalysis = $historicalStatsQuery->take($this->penaltyTakerLookbackSeasons)->get();
+            // Stats per medie generali (numero di stagioni passato come argomento)
+            $historicalStatsForAverages = $historicalStatsQuery->take($numberOfSeasonsToConsider)->get();
+            
+            
+            if ($historicalStatsForAverages->isEmpty()) {
+                Log::warning("ProjectionEngineService: Nessuna statistica storica (medie) per ID {$player->fanta_platform_id}. Uso default.");
+                $age = $player->date_of_birth ? $player->date_of_birth->age : null;
+                $defaultStatsPerGame = $this->getDefaultStatsPerGameForRole($player->role, $player->team?->tier, $age);
                 
                 $fantaMediaProjectedPerGame = $this->pointCalculator->calculateFantasyPoints(
                     $defaultStatsPerGame,
                     $leagueProfile->scoring_rules ?? [],
                     $player->role
                     );
-                $defaultPresences = 15; // Valore arbitrario di default per le presenze
+                $defaultPresences = $this->estimateDefaultPresences($player->role, $player->team?->tier, $age);
                 
                 return [
                     'stats_per_game_for_fm_calc' => $defaultStatsPerGame,
                     'mv_proj_per_game' => $defaultStatsPerGame['mv'] ?? 6.0,
-                    'fanta_media_proj_per_game' => $fantaMediaProjectedPerGame,
+                    'fanta_media_proj_per_game' => round($fantaMediaProjectedPerGame, 2),
                     'presenze_proj' => $defaultPresences,
-                    'total_fantasy_points_proj' => $fantaMediaProjectedPerGame * $defaultPresences,
+                    'total_fantasy_points_proj' => round($fantaMediaProjectedPerGame * $defaultPresences, 2),
                     'seasonal_totals_proj' => collect($defaultStatsPerGame)->mapWithKeys(function ($value, $key) use ($defaultPresences) {
-                    if ($key === 'mv' || $key === 'clean_sheet') { // MV e clean_sheet (probabilità) rimangono "per game"
-                        return [$key.'_proj' => $value];
+                    if ($key === 'mv' || $key === 'clean_sheet') {
+                        return [$key . '_proj' => $value];
                     }
-                    return [$key.'_proj' => $value * $defaultPresences];
+                    return [$key . '_proj' => round($value * $defaultPresences, 2)];
                     })->all(),
                     ];
             }
             
-            // Prepara i pesi per le stagioni se non forniti o non corrispondenti
-            if (empty($seasonWeights) || count($seasonWeights) !== $historicalStats->count()) {
-                $seasonWeights = $this->calculateDefaultSeasonWeights($historicalStats->count());
-                Log::info("ProjectionEngineService: Pesi stagionali di default calcolati: " . json_encode($seasonWeights));
+            if (empty($seasonWeights) || count($seasonWeights) !== $historicalStatsForAverages->count()) {
+                $seasonWeights = $this->calculateDefaultSeasonWeights($historicalStatsForAverages->count());
             }
             
-            // 1. Calcola le medie ponderate PER PARTITA
-            $weightedStatsPerGame = $this->calculateWeightedAverageStats($historicalStats, $seasonWeights);
-            Log::debug("ProjectionEngineService: Statistiche medie ponderate PER PARTITA calcolate: " . json_encode($weightedStatsPerGame));
+            $weightedStatsPerGame = $this->calculateWeightedAverageStats($historicalStatsForAverages, $seasonWeights);
+            Log::debug("ProjectionEngineService: Statistiche medie ponderate PER PARTITA: " . json_encode($weightedStatsPerGame));
             
-            // 2. Applica aggiustamenti alle statistiche PER PARTITA e ottieni le presenze attese
-            $adjustmentResult = $this->applyAdjustmentsAndEstimatePresences($weightedStatsPerGame, $player, $leagueProfile);
+            $adjustmentResult = $this->applyAdjustmentsAndEstimatePresences($weightedStatsPerGame, $player, $leagueProfile, $allHistoricalStatsForPenaltyAnalysis);
             $adjustedStatsPerGame = $adjustmentResult['adjusted_stats_per_game'];
             $presenzeAttese = $adjustmentResult['presenze_attese'];
             Log::debug("ProjectionEngineService: Statistiche PER PARTITA aggiustate: " . json_encode($adjustedStatsPerGame));
             Log::debug("ProjectionEngineService: Presenze attese stimate: " . $presenzeAttese);
             
-            // 3. Prepara l'array di statistiche PER PARTITA per il calcolatore di punti
             $statsForFmCalculation = [
                 'mv' => $adjustedStatsPerGame['avg_rating'] ?? 6.0,
                 'gol_fatti' => $adjustedStatsPerGame['goals_scored'] ?? 0,
@@ -96,10 +103,9 @@ class ProjectionEngineService
                 'rigori_sbagliati' => $adjustedStatsPerGame['penalties_missed'] ?? 0,
                 'rigori_parati' => $adjustedStatsPerGame['penalties_saved'] ?? 0,
                 'gol_subiti' => $adjustedStatsPerGame['goals_conceded'] ?? 0,
-                'clean_sheet' => $adjustedStatsPerGame['clean_sheet_per_game_proj'] ?? 0, //  MODIFICATO: Usa la nuova chiave se esiste
+                'clean_sheet' => $adjustedStatsPerGame['clean_sheet_per_game_proj'] ?? 0,
             ];
             
-            // 4. Calcola la FantaMedia Proiettata PER PARTITA
             $fantaMediaProjectedPerGame = $this->pointCalculator->calculateFantasyPoints(
                 $statsForFmCalculation,
                 $leagueProfile->scoring_rules ?? [],
@@ -107,66 +113,48 @@ class ProjectionEngineService
                 );
             Log::info("ProjectionEngineService: FantaMedia proiettata PER PARTITA per {$player->name}: {$fantaMediaProjectedPerGame}");
             
-            // 5. Calcola i fantapunti totali stagionali proiettati
             $totalFantasyPointsProjected = $fantaMediaProjectedPerGame * $presenzeAttese;
             Log::info("ProjectionEngineService: Fantapunti totali stagionali proiettati per {$player->name}: {$totalFantasyPointsProjected}");
             
-            // 6. Scala le statistiche PER PARTITA per ottenere i totali stagionali, se ti servono
             $projectedSeasonalTotals = [];
             foreach ($adjustedStatsPerGame as $key => $valuePerGame) {
-                // avg_rating e la probabilità di clean_sheet per game rimangono "per partita" o sono già una probabilità
-                // Le altre vengono scalate per le presenze.
                 if ($key === 'avg_rating') {
-                    $projectedSeasonalTotals['mv_proj_per_game'] = $valuePerGame;
+                    $projectedSeasonalTotals['mv_proj_per_game'] = round($valuePerGame, 2);
                 } elseif ($key === 'clean_sheet_per_game_proj') {
-                    $projectedSeasonalTotals[$key] = $valuePerGame; // o scala per presenze se vuoi il numero totale di clean sheet
-                    // $projectedSeasonalTotals['total_clean_sheets_proj'] = $valuePerGame * $presenzeAttese; // Esempio
+                    $projectedSeasonalTotals[$key] = round($valuePerGame, 2);
                 } else {
-                    $projectedSeasonalTotals[$key.'_proj'] = $valuePerGame * $presenzeAttese;
+                    if (!in_array($key, ['avg_rating', 'avg_games_played', 'penalties_taken_by_player_rate', 'penalty_conversion_rate_player'])) {
+                        $projectedSeasonalTotals[$key . '_proj'] = round($valuePerGame * $presenzeAttese, 2);
+                    }
                 }
             }
-            // Assicurati che 'mv_proj_per_game' sia sempre presente se 'avg_rating' c'era
             if (!isset($projectedSeasonalTotals['mv_proj_per_game']) && isset($adjustedStatsPerGame['avg_rating'])) {
-                $projectedSeasonalTotals['mv_proj_per_game'] = $adjustedStatsPerGame['avg_rating'];
+                $projectedSeasonalTotals['mv_proj_per_game'] = round($adjustedStatsPerGame['avg_rating'], 2);
             }
             
-            
             return [
-                'stats_per_game_for_fm_calc' => $statsForFmCalculation, // Dati usati per calcolare la FM/partita
-                'mv_proj_per_game' => $adjustedStatsPerGame['avg_rating'] ?? 6.0,
-                'fanta_media_proj_per_game' => round($fantaMediaProjectedPerGame, 2), // Arrotonda la FM
+                'stats_per_game_for_fm_calc' => $statsForFmCalculation,
+                'mv_proj_per_game' => round($adjustedStatsPerGame['avg_rating'] ?? 6.0, 2),
+                'fanta_media_proj_per_game' => round($fantaMediaProjectedPerGame, 2),
                 'presenze_proj' => $presenzeAttese,
-                'total_fantasy_points_proj' => round($totalFantasyPointsProjected, 2), // Arrotonda i punti totali
-                'seasonal_totals_proj' => $projectedSeasonalTotals, // Contiene i totali stagionali per stat
+                'total_fantasy_points_proj' => round($totalFantasyPointsProjected, 2),
+                'seasonal_totals_proj' => $projectedSeasonalTotals,
             ];
     }
     
-    /**
-     * Calcola i pesi di default per le stagioni se non forniti.
-     * Dà più peso alle stagioni più recenti.
-     */
     private function calculateDefaultSeasonWeights(int $numberOfSeasons): array
     {
         if ($numberOfSeasons === 0) return [];
         if ($numberOfSeasons === 1) return [1.0];
-        
         $weights = [];
-        $totalWeightParts = 0;
-        for ($i = $numberOfSeasons; $i >= 1; $i--) {
-            $totalWeightParts += $i;
-        }
-        
+        $totalWeightParts = array_sum(range(1, $numberOfSeasons));
         if ($totalWeightParts === 0) return array_fill(0, $numberOfSeasons, 1 / $numberOfSeasons);
-        
         for ($i = $numberOfSeasons; $i >= 1; $i--) {
             $weights[] = $i / $totalWeightParts;
         }
         return $weights;
     }
     
-    /**
-     * Calcola le medie ponderate delle statistiche chiave PER PARTITA.
-     */
     private function calculateWeightedAverageStats(Collection $historicalStats, array $seasonWeights): array
     {
         $weightedAverages = [
@@ -174,9 +162,11 @@ class ProjectionEngineService
             'yellow_cards' => 0.0, 'red_cards' => 0.0, 'own_goals' => 0.0,
             'penalties_scored' => 0.0, 'penalties_missed' => 0.0,
             'penalties_saved' => 0.0, 'goals_conceded' => 0.0,
-            'avg_games_played' => 0.0, // Media ponderata delle presenze storiche, usata per stimare le future
+            'avg_games_played' => 0.0,
+            'penalties_taken' => 0.0,
         ];
         $totalWeightSumForPerGameStats = 0;
+        $totalWeightSumForGamesPlayed = 0;
         
         foreach ($historicalStats as $index => $stats) {
             $weight = $seasonWeights[$index] ?? (1 / $historicalStats->count());
@@ -190,216 +180,320 @@ class ProjectionEngineService
                 $weightedAverages['red_cards'] += ($stats->red_cards / $games) * $weight;
                 $weightedAverages['own_goals'] += ($stats->own_goals / $games) * $weight;
                 $weightedAverages['penalties_scored'] += ($stats->penalties_scored / $games) * $weight;
-                $weightedAverages['penalties_missed'] += ($stats->penalties_missed / $games) * $weight;
+                $weightedAverages['penalties_missed'] += (($stats->penalties_taken - $stats->penalties_scored) / $games) * $weight;
                 $weightedAverages['penalties_saved'] += ($stats->penalties_saved / $games) * $weight;
                 $weightedAverages['goals_conceded'] += ($stats->goals_conceded / $games) * $weight;
+                $weightedAverages['penalties_taken'] += ($stats->penalties_taken / $games) * $weight;
                 $totalWeightSumForPerGameStats += $weight;
             }
             $weightedAverages['avg_games_played'] += $stats->games_played * $weight;
+            $totalWeightSumForGamesPlayed += $weight;
         }
         
         if ($totalWeightSumForPerGameStats > 0) {
-            foreach (['avg_rating', 'goals_scored', 'assists', 'yellow_cards', 'red_cards', 'own_goals', 'penalties_scored', 'penalties_missed', 'penalties_saved', 'goals_conceded'] as $key) {
-                if (isset($weightedAverages[$key])) { // Aggiunto controllo isset
+            foreach (array_keys($weightedAverages) as $key) {
+                if ($key !== 'avg_games_played' && isset($weightedAverages[$key])) {
                     $weightedAverages[$key] = $weightedAverages[$key] / $totalWeightSumForPerGameStats;
                 }
             }
         }
-        // avg_games_played è già una media ponderata corretta, non necessita di divisione per $totalWeightSumForPerGameStats
-        // perché i suoi pesi sono già normalizzati implicitamente dalla somma dei pesi stessi.
-        // Se $seasonWeights somma a 1, $weightedAverages['avg_games_played'] è già la media ponderata.
-        
-        
+        if ($totalWeightSumForGamesPlayed > 0 && abs($totalWeightSumForGamesPlayed - 1.0) > 1e-9) {
+            $weightedAverages['avg_games_played'] = $weightedAverages['avg_games_played'] / $totalWeightSumForGamesPlayed;
+        }
         return $weightedAverages;
     }
     
-    /**
-     * Applica aggiustamenti alle statistiche ponderate PER PARTITA e stima le presenze.
-     * Restituisce un array con 'adjusted_stats_per_game' e 'presenze_attese'.
-     */
-    private function applyAdjustmentsAndEstimatePresences(array $weightedStatsPerGame, Player $player, UserLeagueProfile $leagueProfile): array
+    private function applyAdjustmentsAndEstimatePresences(array $weightedStatsPerGame, Player $player, UserLeagueProfile $leagueProfile, Collection $historicalStatsForPenaltyAnalysis): array
     {
         $adjustedStatsPerGame = $weightedStatsPerGame;
-        $ageModifier = 1.0; // Default, nessun modificatore
+        $ageModifier = 1.0;
         
-        // Carica la configurazione delle curve di età
-        $ageCurveConfigData = config('player_age_curves.dati_ruoli');
-        $ageModParams = config('player_age_curves.age_modifier_params');
+        $ageCurvesConfig = Config::get('player_age_curves.dati_ruoli');
+        $ageModifierParams = Config::get('player_age_curves.age_modifier_params');
         
-        if ($player->date_of_birth && $ageCurveConfigData && $ageModParams) {
+        // --- BLOCCO AGGIUSTAMENTO ETÀ ---
+        if ($player->date_of_birth && $ageCurvesConfig && $ageModifierParams) {
             $age = $player->date_of_birth->age;
             Log::debug("ProjectionEngineService: Giocatore {$player->name}, Età: {$age}");
-            
-            $roleKey = strtoupper($player->role);
-            // Gestione preliminare per ruoli Difensivi specifici se hai intenzione di usare D_CENTRALE/D_ESTERNO
-            // Per ora, se il ruolo è 'D', usiamo una configurazione generica per 'D' o una media.
-            // O, per semplicità iniziale, mappa tutti i 'D' a 'D_CENTRALE' o a una nuova entry 'D' nel config.
-            // Per questo esempio, aggiungo una chiave 'D' generica al config se non hai distinto
-            // Se non c'è 'D' ma ci sono 'D_CENTRALE' e 'D_ESTERNO', scegliamo D_CENTRALE come fallback per 'D'.
-            if ($roleKey === 'D' && !isset($ageCurveConfigData[$roleKey])) {
-                $config = $ageCurveConfigData['D_CENTRALE'] ?? ($ageCurveConfigData['D_ESTERNO'] ?? null); // Fallback
+            $roleKey = strtoupper($player->role ?? 'C');
+            if ($roleKey === 'D' && !isset($ageCurvesConfig[$roleKey])) {
+                $configForRole = $ageCurvesConfig['D_CENTRALE'] ?? $ageCurvesConfig['C'] ?? null;
             } else {
-                $config = $ageCurveConfigData[$roleKey] ?? null;
+                $configForRole = $ageCurvesConfig[$roleKey] ?? $ageCurvesConfig['C'] ?? null;
             }
             
-            
-            if ($config) {
-                if ($age <= $config['fasi_carriera']['sviluppo_fino_a']) {
-                    // Fase di sviluppo, potrebbe essere prima di peak_start
-                    $ageModifier = min($config['young_cap'], 1.0 + (($config['fasi_carriera']['picco_inizio'] - $age) * $config['growth_factor']));
-                } elseif ($age >= $config['fasi_carriera']['picco_inizio'] && $age <= $config['fasi_carriera']['picco_fine']) {
-                    // Fase di picco - ageModifier rimane 1.0 o un piccolo bonus
-                    // $ageModifier = 1.02; // Esempio di piccolo bonus per il picco
-                } elseif ($age > $config['fasi_carriera']['picco_fine'] && $age <= $config['fasi_carriera']['mantenimento_fino_a']) {
-                    // Fase di mantenimento/declino graduale
-                    // Applica una frazione del decline_factor o un decline_factor più piccolo
-                    $declineFactorGradual = $config['decline_factor'] * 0.5; // Esempio: metà del fattore di declino
-                    $ageModifier = max($config['old_cap'], 1.0 - (($age - $config['fasi_carriera']['picco_fine']) * $declineFactorGradual));
-                } elseif ($age >= $config['fasi_carriera']['declino_da']) {
-                    // Fase di declino più marcato
-                    // Calcola il declino a partire dalla fine del picco per continuità, o da decline_da per un salto
-                    $effectiveDeclineStartAge = $config['fasi_carriera']['picco_fine']; // O $config['fasi_carriera']['declino_da'] se vuoi un "salto"
-                    $ageModifier = max($config['old_cap'], 1.0 - (($age - $effectiveDeclineStartAge) * $config['decline_factor']));
-                }
-                // Assicurati che ageModifier non sia diventato 0 o negativo se i calcoli sono strani
-                $ageModifier = max(0.1, $ageModifier); // Minimo 0.1
+            if ($configForRole && isset($configForRole['fasi_carriera'])) {
+                $fasi = $configForRole['fasi_carriera'];
+                $peakStart = $fasi['picco_inizio'] ?? 25;
+                $peakEnd = $fasi['picco_fine'] ?? 30;
+                $growthFactor = $configForRole['growth_factor'] ?? 0.020;
+                $declineFactor = $configForRole['decline_factor'] ?? 0.030;
+                $youngCap = $configForRole['young_cap'] ?? 1.20;
+                $oldCap = $configForRole['old_cap'] ?? 0.70;
                 
-                Log::debug("ProjectionEngineService: Giocatore {$player->name}, Età: {$age}, Ruolo: {$roleKey}, Config Ruolo: " . json_encode($config) . ", Modificatore Età Calcolato: {$ageModifier}");
+                if ($age < $peakStart) {
+                    $ageModifier = min($youngCap, 1.0 + (($peakStart - $age) * $growthFactor));
+                } elseif ($age > $peakEnd) {
+                    $ageModifier = max($oldCap, 1.0 - (($age - $peakEnd) * $declineFactor));
+                }
+                Log::debug("ProjectionEngineService: Modificatore Età per {$player->name} ({$roleKey}): {$ageModifier} (Config: P_Start:{$peakStart}, P_End:{$peakEnd}, GF:{$growthFactor}, DF:{$declineFactor})");
                 
                 if (isset($adjustedStatsPerGame['avg_rating'])) {
-                    $adjustedStatsPerGame['avg_rating'] *= (1 + ($ageModifier - 1) * $ageModParams['mv_effect_ratio']);
-                    $adjustedStatsPerGame['avg_rating'] = round($adjustedStatsPerGame['avg_rating'], 4);
+                    $mvEffect = $ageModifierParams['mv_effect_ratio'] ?? 0.5;
+                    $adjustedStatsPerGame['avg_rating'] *= (1 + ($ageModifier - 1) * $mvEffect);
                 }
+                // Applica ageModifier a gol e assist, ma non ancora ai rigori (verranno gestiti dopo)
                 foreach (['goals_scored', 'assists'] as $key) {
-                    if (isset($adjustedStatsPerGame[$key])) {
-                        $adjustedStatsPerGame[$key] *= $ageModifier;
-                    }
+                    if (isset($adjustedStatsPerGame[$key])) $adjustedStatsPerGame[$key] *= $ageModifier;
                 }
             } else {
-                Log::warning("ProjectionEngineService: Nessuna configurazione curva età trovata per Ruolo: {$roleKey} per giocatore {$player->name}.");
+                Log::warning("ProjectionEngineService: Configurazione curva età non trovata o incompleta per ruolo {$roleKey}. Nessun age modifier applicato.");
             }
-        } else {
-            Log::debug("ProjectionEngineService: Data di nascita non disponibile per {$player->name} o configurazione curve età mancante, salto aggiustamento età.");
         }
-        // --- FINE BLOCCO AGGIUSTAMENTO ETÀ ---
         
-        // --- BLOCCO TIER SQUADRA (come prima, assicurati che $player->team->tier sia corretto) ---
+        // --- BLOCCO TIER SQUADRA (PRIMA APPLICAZIONE) ---
         $teamTier = $player->team?->tier ?? 3;
-        $offensiveTierFactors = [1 => 1.15, 2 => 1.05, 3 => 1.00, 4 => 0.95, 5 => 0.85]; // Da config?
-        $defensiveTierFactors = [1 => 0.85, 2 => 0.95, 3 => 1.00, 4 => 1.05, 5 => 1.15]; // Da config?
+        Log::debug("[DEBUG TIER] Player: {$player->name}, Team Name from DB: {$player->team?->name}, Team Tier from DB: {$teamTier}");
+        $offensiveTierFactors = [1 => 1.15, 2 => 1.05, 3 => 1.00, 4 => 0.95, 5 => 0.85];
+        $defensiveTierFactors = [1 => 0.85, 2 => 0.95, 3 => 1.00, 4 => 1.05, 5 => 1.15];
         $tierMultiplierOffensive = $offensiveTierFactors[$teamTier] ?? 1.0;
         $tierMultiplierDefensive = $defensiveTierFactors[$teamTier] ?? 1.0;
+        Log::debug("[DEBUG TIER] Tier Multiplier Offensivo CALCOLATO per stats generali: {$tierMultiplierOffensive} (basato su teamTier: {$teamTier})");
         
-        foreach (['goals_scored', 'assists'] as $key) {
-            if (isset($adjustedStatsPerGame[$key])) {
-                $adjustedStatsPerGame[$key] *= $tierMultiplierOffensive;
+        // Applica a gol (non da rigore, per ora) e assist
+        if (isset($adjustedStatsPerGame['goals_scored'])) $adjustedStatsPerGame['goals_scored'] *= $tierMultiplierOffensive;
+        if (isset($adjustedStatsPerGame['assists'])) $adjustedStatsPerGame['assists'] *= $tierMultiplierOffensive;
+        // Applica a rigori calciati e segnati base (verranno sovrascritti se è rigorista)
+        if (isset($adjustedStatsPerGame['penalties_taken'])) $adjustedStatsPerGame['penalties_taken'] *= $tierMultiplierOffensive;
+        if (isset($adjustedStatsPerGame['penalties_scored'])) $adjustedStatsPerGame['penalties_scored'] *= $tierMultiplierOffensive;
+        
+        
+        if (strtoupper($player->role ?? '') === 'P' || strtoupper($player->role ?? '') === 'D') {
+            if (isset($adjustedStatsPerGame['goals_conceded'])) $adjustedStatsPerGame['goals_conceded'] *= $tierMultiplierDefensive;
+        }
+        
+        // --- BLOCCO RIGORISTI ---
+        $totalPenaltiesTakenInLookback = 0;
+        $totalGamesPlayedInLookback = 0;
+        $totalPenaltiesScoredInLookback = 0;
+        
+        if ($historicalStatsForPenaltyAnalysis->isNotEmpty()) {
+            foreach ($historicalStatsForPenaltyAnalysis as $statSeason) {
+                $totalPenaltiesTakenInLookback += $statSeason->penalties_taken;
+                $totalPenaltiesScoredInLookback += $statSeason->penalties_scored;
+                $totalGamesPlayedInLookback += $statSeason->games_played;
             }
         }
-        if (strtoupper($player->role) === 'P') {
-            if (isset($adjustedStatsPerGame['goals_conceded'])) {
-                $adjustedStatsPerGame['goals_conceded'] *= $tierMultiplierDefensive;
+        $isLikelyPenaltyTaker = ($totalPenaltiesTakenInLookback >= $this->minPenaltiesTakenThreshold);
+        // Futuro: $isLikelyPenaltyTaker = $player->is_designated_penalty_taker ?? $isLikelyPenaltyTaker;
+        
+        // Stats base dei rigori (già modulate da età e tier generali sulle medie storiche)
+        $basePenaltiesTakenPerGame = $adjustedStatsPerGame['penalties_taken'] ?? 0;
+        $basePenaltiesScoredPerGame = $adjustedStatsPerGame['penalties_scored'] ?? 0;
+        // $basePenaltiesMissedPerGame = $adjustedStatsPerGame['penalties_missed'] ?? 0; // Calcolata dopo
+        
+        if ($isLikelyPenaltyTaker) {
+            Log::info("ProjectionEngineService: Giocatore {$player->name} identificato come probabile rigorista (Storico: {$totalPenaltiesTakenInLookback} calciati).");
+            
+            // 1. Stima dei rigori che la squadra del giocatore potrebbe ottenere per partita
+            $expectedPenaltiesForHisTeamPerGame = $this->leagueAvgPenaltiesAwardedPerTeamGame * $tierMultiplierOffensive;
+            Log::debug("ProjectionEngineService: Rigorista {$player->name} - Rigori attesi per la sua squadra/partita: {$expectedPenaltiesForHisTeamPerGame} (Media Lega: {$this->leagueAvgPenaltiesAwardedPerTeamGame}, TierMultiOff: {$tierMultiplierOffensive})");
+            
+            // 2. Quota di questi rigori che il giocatore calcerà
+            $projectedPenaltiesTakenByPlayerThisSeason = $expectedPenaltiesForHisTeamPerGame * $this->penaltyTakerShareOfTeamPenalties;
+            // Applica l'ageModifier anche alla propensione a calciare rigori (un giocatore più anziano potrebbe cedere il compito)
+            $projectedPenaltiesTakenByPlayerThisSeason *= $ageModifier;
+            Log::debug("ProjectionEngineService: Rigorista {$player->name} - Proiezione Rigori Calciati da lui/partita: {$projectedPenaltiesTakenByPlayerThisSeason} (Quota: {$this->penaltyTakerShareOfTeamPenalties}, AgeMod: {$ageModifier})");
+            
+            
+            // 3. Tasso di conversione storico del giocatore, con fallback
+            $penaltyConversionRatePlayerHist = $this->defaultPenaltyConversionRate;
+            if ($totalPenaltiesTakenInLookback > 0) {
+                $penaltyConversionRatePlayerHist = $totalPenaltiesScoredInLookback / $totalPenaltiesTakenInLookback;
             }
+            // Applica ageModifier al tasso di conversione
+            $conversionAgeEffect = 1 + (($ageModifier - 1) * 0.2); // 20% dell'effetto età sulla conversione
+            $finalPlayerConversionRate = $penaltyConversionRatePlayerHist * $conversionAgeEffect;
+            $finalPlayerConversionRate = max(0.50, min(0.95, $finalPlayerConversionRate)); // Limita tra 50% e 95%
+            Log::debug("ProjectionEngineService: Rigorista {$player->name} - Tasso Conversione Finale: {$finalPlayerConversionRate} (Storico: {$penaltyConversionRatePlayerHist}, AgeConvEffect: {$conversionAgeEffect})");
+            
+            
+            // 4. Proiezione rigori segnati e sbagliati dal giocatore
+            $projectedPenaltiesScoredByPlayer = $projectedPenaltiesTakenByPlayerThisSeason * $finalPlayerConversionRate;
+            $projectedPenaltiesMissedByPlayer = $projectedPenaltiesTakenByPlayerThisSeason * (1 - $finalPlayerConversionRate);
+            
+            // 5. Aggiornamento stats e gol
+            // Calcola la differenza netta di gol da rigore rispetto alla stima base
+            // La stima base dei gol da rigore era $basePenaltiesScoredPerGame (già influenzata da età e tier generali)
+            $netChangeInScoredPenalties = $projectedPenaltiesScoredByPlayer - $basePenaltiesScoredPerGame;
+            
+            $adjustedStatsPerGame['penalties_taken'] = $projectedPenaltiesTakenByPlayerThisSeason;
+            $adjustedStatsPerGame['penalties_scored'] = $projectedPenaltiesScoredByPlayer;
+            $adjustedStatsPerGame['penalties_missed'] = $projectedPenaltiesMissedByPlayer;
+            
+            // Aggiusta i gol totali con la *variazione netta* dei rigori segnati
+            $adjustedStatsPerGame['goals_scored'] = ($adjustedStatsPerGame['goals_scored'] ?? 0) + $netChangeInScoredPenalties;
+            Log::debug("ProjectionEngineService: Rigorista {$player->name} - Variazione Netta Gol da Rigore: {$netChangeInScoredPenalties}. Gol Totali Aggiornati: {$adjustedStatsPerGame['goals_scored']}");
+            
+        } else {
+            // Se non è rigorista designato, le sue stats di rigori rimangono quelle delle medie ponderate (già modificate da età e tier generali)
+            // Assicuriamoci che penalties_missed sia calcolato anche per i non rigoristi se hanno calciato rigori in passato
+            $adjustedStatsPerGame['penalties_missed'] = ($adjustedStatsPerGame['penalties_taken'] ?? 0) - ($adjustedStatsPerGame['penalties_scored'] ?? 0);
+            Log::debug("ProjectionEngineService: Giocatore {$player->name} non identificato come rigorista principale. Rigori calciati/segnati/sbagliati basati su medie storiche individuali modulate.");
         }
-        // --- FINE BLOCCO TIER SQUADRA ---
         
         
-        // --- BLOCCO PROIEZIONE CLEAN SHEET (come prima, con $ageModParams) ---
+        // --- BLOCCO PROIEZIONE CLEAN SHEET ---
         $adjustedStatsPerGame['clean_sheet_per_game_proj'] = 0.0;
-        if (strtoupper($player->role) === 'P' || strtoupper($player->role) === 'D') {
-            $baseCleanSheetProb = [1 => 0.40, 2 => 0.30, 3 => 0.20, 4 => 0.15, 5 => 0.10]; // Da config?
-            $probCS = $baseCleanSheetProb[$teamTier] ?? 0.10;
-            $probCS *= (1 + ($ageModifier - 1) * $ageModParams['cs_age_effect_ratio']);
-            $adjustedStatsPerGame['clean_sheet_per_game_proj'] = max(0.05, min(0.75, round($probCS,3)));
+        if (strtoupper($player->role ?? '') === 'P' || strtoupper($player->role ?? '') === 'D') {
+            $baseCleanSheetProbMap = [1 => 0.40, 2 => 0.30, 3 => 0.20, 4 => 0.15, 5 => 0.10];
+            $probCS = $baseCleanSheetProbMap[$teamTier] ?? 0.10;
+            $csAgeEffect = $ageModifierParams['cs_age_effect_ratio'] ?? 0.3;
+            $probCS *= (1 + ($ageModifier - 1) * $csAgeEffect);
+            $adjustedStatsPerGame['clean_sheet_per_game_proj'] = max(0, min(0.8, round($probCS, 3)));
         }
-        // --- FINE BLOCCO PROIEZIONE CLEAN SHEET ---
         
-        // --- BLOCCO STIMA PRESENZE (come prima, con $ageModParams) ---
+        // --- BLOCCO STIMA PRESENZE ---
         $basePresenze = $weightedStatsPerGame['avg_games_played'] ?? 20;
+        Log::debug("[DEBUG TIER PRESENZE] Team: {$player->team?->name}, Tier DB: {$player->team?->tier}, TierMultiplierOffensive usato per presenze: {$tierMultiplierOffensive}");
         $presenzeTierFactor = 1 + (($tierMultiplierOffensive - 1) * 0.3);
+        Log::debug("[DEBUG TIER PRESENZE] PresenzeTierFactor CALCOLATO: {$presenzeTierFactor}");
+        
         $presenzeAgeFactor = $ageModifier;
-        if ($ageModifier < 1.0) {
-            $presenzeAgeFactor = 1 - ((1 - $ageModifier) * $ageModParams['presenze_decline_effect_ratio']);
-            $presenzeAgeFactor = max($ageModParams['presenze_decline_cap'], $presenzeAgeFactor);
-        } elseif ($ageModifier > 1.0) {
-            $presenzeAgeFactor = 1 + (($ageModifier - 1) * $ageModParams['presenze_growth_effect_ratio']);
-            $presenzeAgeFactor = min($ageModParams['presenze_growth_cap'], $presenzeAgeFactor);
+        if ($ageModifier < 1.0 && isset($ageModifierParams)) {
+            $declineEffect = $ageModifierParams['presenze_decline_effect_ratio'] ?? 1.1;
+            $declineCap = $ageModifierParams['presenze_decline_cap'] ?? 0.65;
+            $presenzeAgeFactor = max($declineCap, 1 - ((1 - $ageModifier) * $declineEffect));
+        } elseif ($ageModifier > 1.0 && isset($ageModifierParams)) {
+            $growthEffect = $ageModifierParams['presenze_growth_effect_ratio'] ?? 0.4;
+            $growthCap = $ageModifierParams['presenze_growth_cap'] ?? 1.12;
+            $presenzeAgeFactor = min($growthCap, 1 + (($ageModifier - 1) * $growthEffect));
         }
+        
         $presenzeAttese = round($basePresenze * $presenzeTierFactor * $presenzeAgeFactor);
         $presenzeAttese = max(5, min(38, (int)$presenzeAttese));
         Log::debug("ProjectionEngineService: Stima Presenze per {$player->name} - Base:{$basePresenze}, TierFactor:{$presenzeTierFactor}, AgeFactor:{$presenzeAgeFactor} => Finale:{$presenzeAttese}");
-        // --- FINE BLOCCO STIMA PRESENZE ---
         
-        if (isset($adjustedStatsPerGame['avg_games_played'])) {
-            unset($adjustedStatsPerGame['avg_games_played']);
-        }
-        foreach($adjustedStatsPerGame as $key => &$value) {
-            if(is_numeric($value)) {
-                $value = round($value, 4);
-            }
-        }
+        if (isset($adjustedStatsPerGame['avg_games_played'])) unset($adjustedStatsPerGame['avg_games_played']);
+        
         return [
             'adjusted_stats_per_game' => $adjustedStatsPerGame,
             'presenze_attese' => $presenzeAttese,
         ];
     }
     
-    /**
-     * Fornisce statistiche di default PER PARTITA se non ci sono dati storici.
-     */
-    private function getDefaultStatsPerGameForRole(string $role, ?int $teamTier): array
+    private function estimateDefaultPresences(?string $role, ?int $teamTier, ?int $age): int
     {
-        Log::warning("ProjectionEngineService: Utilizzo stats di default PER PARTITA per ruolo {$role}, tier {$teamTier}");
-        $baseMv = 5.8;
-        $baseGoalsPerGame = 0.0;
-        $baseAssistsPerGame = 0.0;
-        $baseYellowCardsPerGame = 0.1; // ~1 ogni 10 partite
-        $baseRedCardsPerGame = 0.005; // ~1 ogni 200 partite
-        $baseOwnGoalsPerGame = 0.002;
-        $basePenScoredPerGame = 0.0;
-        $basePenMissedPerGame = 0.0;
-        $basePenSavedPerGame = 0.0; // Solo Portieri
-        $baseGoalsConcededPerGame = 0.0; // Solo Portieri
-        $baseCleanSheetProb = 0.0; // Solo P/D
+        $base = 20;
+        $roleKey = strtoupper($role ?? 'C');
+        $currentTeamTier = $teamTier ?? 3;
         
-        switch (strtoupper($role)) {
-            case 'P':
-                $baseMv = 6.0; $baseCleanSheetProb = 0.20; $baseGoalsConcededPerGame = 1.3; $basePenSavedPerGame = 0.05;
-                break;
-            case 'D':
-                $baseMv = 5.9; $baseGoalsPerGame = 0.03; $baseAssistsPerGame = 0.03; $baseCleanSheetProb = 0.20;
-                break;
-            case 'C':
-                $baseMv = 6.0; $baseGoalsPerGame = 0.10; $baseAssistsPerGame = 0.10;
-                break;
-            case 'A':
-                $baseMv = 6.1; $baseGoalsPerGame = 0.35; $baseAssistsPerGame = 0.08;
-                break;
-        }
+        $ageCurvesConfig = Config::get('player_age_curves.dati_ruoli');
+        $ageModifierParams = Config::get('player_age_curves.age_modifier_params');
+        $ageModifierForPresences = 1.0;
         
-        $tierMultiplierOffensive = 1.0;
-        $tierMultiplierDefensiveFactor = 1.0; // Usato per invertire l'effetto su stats difensive
-        if ($teamTier) {
-            switch ($teamTier) {
-                case 1: $tierMultiplierOffensive = 1.15; $tierMultiplierDefensiveFactor = 0.85; break;
-                case 2: $tierMultiplierOffensive = 1.05; $tierMultiplierDefensiveFactor = 0.95; break;
-                case 3: $tierMultiplierOffensive = 1.0;  $tierMultiplierDefensiveFactor = 1.0; break;
-                case 4: $tierMultiplierOffensive = 0.95; $tierMultiplierDefensiveFactor = 1.05; break;
-                case 5: $tierMultiplierOffensive = 0.85; $tierMultiplierDefensiveFactor = 1.15; break;
+        if ($age && $ageCurvesConfig && $ageModifierParams) {
+            $configForRole = $ageCurvesConfig[$roleKey] ?? $ageCurvesConfig['C'] ?? null;
+            if ($configForRole && isset($configForRole['fasi_carriera'])) {
+                $fasi = $configForRole['fasi_carriera'];
+                $peakStart = $fasi['picco_inizio'] ?? 25;
+                $peakEnd = $fasi['picco_fine'] ?? 30;
+                $growthFactorPresenze = $configForRole['presenze_growth_factor'] ?? $configForRole['growth_factor'] ?? 0.020;
+                $declineFactorPresenze = $configForRole['presenze_decline_factor'] ?? $configForRole['decline_factor'] ?? 0.030;
+                
+                if ($age < $peakStart) {
+                    $growthEffect = $ageModifierParams['presenze_growth_effect_ratio'] ?? 0.4;
+                    $growthCap = $ageModifierParams['presenze_growth_cap'] ?? 1.12;
+                    $ageModifierForPresences = min($growthCap, 1.0 + (($peakStart - $age) * $growthFactorPresenze * $growthEffect));
+                } elseif ($age > $peakEnd) {
+                    $declineEffect = $ageModifierParams['presenze_decline_effect_ratio'] ?? 1.1;
+                    $declineCap = $ageModifierParams['presenze_decline_cap'] ?? 0.65;
+                    $ageModifierForPresences = max($declineCap, 1.0 - (($age - $peakEnd) * $declineFactorPresenze * $declineEffect));
+                }
             }
         }
         
+        if ($roleKey === 'P' && $currentTeamTier <= 2) $base = 32;
+        elseif ($roleKey === 'A' && $currentTeamTier <= 2) $base = 28;
+        elseif ($roleKey === 'C' && $currentTeamTier <= 2) $base = 27;
+        elseif ($roleKey === 'D' && $currentTeamTier <= 2) $base = 26;
+        elseif ($currentTeamTier > 3) $base *= 0.9;
+        
+        $base *= $ageModifierForPresences;
+        
+        return max(5, min(38, (int)round($base)));
+    }
+    
+    private function getDefaultStatsPerGameForRole(?string $role, ?int $teamTier, ?int $age): array
+    {
+        Log::debug("ProjectionEngineService: GetDefaultStats - Ruolo:{$role}, Tier:{$teamTier}, Età:{$age}");
+        $baseMv = 5.8; $baseGoalsNoPen = 0.0; $baseAssists = 0.0; // Gol base senza rigori
+        $baseYellow = 0.1; $baseRed = 0.005; $baseOwn = 0.002;
+        $basePenTakenByPlayer = 0.0; // Rigori che il giocatore stesso potrebbe calciare (se non è il rigorista designato, sarà basso)
+        $basePenSaved = 0.0;
+        $baseGoalsConceded = 0.0; $baseCleanSheet = 0.0;
+        
+        $roleKey = strtoupper($role ?? 'C');
+        $currentTeamTier = $teamTier ?? 3;
+        
+        $ageCurvesConfig = Config::get('player_age_curves.dati_ruoli');
+        $ageModifierForDefaults = 1.0;
+        
+        if ($age && $ageCurvesConfig) {
+            $configForRole = $ageCurvesConfig[$roleKey] ?? $ageCurvesConfig['C'] ?? null;
+            if ($configForRole && isset($configForRole['fasi_carriera'])) {
+                $fasi = $configForRole['fasi_carriera'];
+                $peakStart = $fasi['picco_inizio'] ?? 25;
+                $peakEnd = $fasi['picco_fine'] ?? 30;
+                $growthFactor = $configForRole['growth_factor'] ?? 0.020;
+                $declineFactor = $configForRole['decline_factor'] ?? 0.030;
+                if ($age < $peakStart) $ageModifierForDefaults = 1.0 + (($peakStart - $age) * $growthFactor * 0.5);
+                elseif ($age > $peakEnd) $ageModifierForDefaults = 1.0 - (($age - $peakEnd) * $declineFactor * 0.8);
+                $ageModifierForDefaults = max(0.7, min(1.15, $ageModifierForDefaults));
+            }
+        }
+        
+        switch ($roleKey) {
+            case 'P': $baseMv = 6.05; $baseCleanSheet = 0.22; $baseGoalsConceded = 1.25; $basePenSaved = 0.025; break;
+            case 'D': $baseMv = 5.95; $baseGoalsNoPen = 0.03; $baseAssists = 0.03; $baseCleanSheet = 0.22; break;
+            case 'C': $baseMv = 6.0; $baseGoalsNoPen = 0.08; $baseAssists = 0.08; $basePenTakenByPlayer = 0.01; break; // Pochi rigori spot
+            case 'A': $baseMv = 6.0; $baseGoalsNoPen = 0.25; $baseAssists = 0.06; $basePenTakenByPlayer = 0.03; break; // Pochi rigori spot
+        }
+        
+        $offensiveTierFactors = [1 => 1.20, 2 => 1.10, 3 => 1.00, 4 => 0.90, 5 => 0.80];
+        $defensiveTierFactors = [1 => 0.80, 2 => 0.90, 3 => 1.00, 4 => 1.10, 5 => 1.20];
+        $tierOffensive = $offensiveTierFactors[$currentTeamTier] ?? 1.0;
+        $tierDefensive = $defensiveTierFactors[$currentTeamTier] ?? 1.0;
+        
+        $finalMv = $baseMv * $ageModifierForDefaults;
+        $finalGoalsNoPen = $baseGoalsNoPen * $tierOffensive * $ageModifierForDefaults;
+        $finalAssists = $baseAssists * $tierOffensive * $ageModifierForDefaults;
+        
+        // Per i default, la stima dei rigori è più semplice:
+        // Si assume che i giocatori non rigoristi designati calcino molto pochi rigori.
+        // Se il giocatore fosse rigorista, la logica principale in applyAdjustments sovrascriverebbe questo.
+        $finalPenTaken = $basePenTakenByPlayer * $tierOffensive * $ageModifierForDefaults;
+        $finalPenScored = $finalPenTaken * $this->defaultPenaltyConversionRate;
+        $finalPenMissed = $finalPenTaken * (1 - $this->defaultPenaltyConversionRate);
+        
+        $finalTotalGoals = $finalGoalsNoPen + $finalPenScored;
+        
+        $finalCleanSheet = ($roleKey === 'P' || $roleKey === 'D') ? ($baseCleanSheet / $tierDefensive * $ageModifierForDefaults) : 0.0;
+        $finalGoalsConceded = ($roleKey === 'P') ? ($baseGoalsConceded * $tierDefensive / $ageModifierForDefaults) : 0.0;
+        
         return [
-            'mv' => $baseMv,
-            'gol_fatti' => round($baseGoalsPerGame * $tierMultiplierOffensive, 3),
-            'assist' => round($baseAssistsPerGame * $tierMultiplierOffensive, 3),
-            'ammonizioni' => $baseYellowCardsPerGame,
-            'espulsioni' => $baseRedCardsPerGame,
-            'autogol' => $baseOwnGoalsPerGame,
-            'rigori_segnati' => $basePenScoredPerGame, // Andrebbe stimato meglio
-            'rigori_sbagliati' => $basePenMissedPerGame,
-            'rigori_parati' => (strtoupper($role) === 'P' ? $basePenSavedPerGame : 0.0),
-            'gol_subiti' => (strtoupper($role) === 'P' ? round($baseGoalsConcededPerGame * $tierMultiplierDefensiveFactor, 2) : 0.0),
-            'clean_sheet' => ((strtoupper($role) === 'P' || strtoupper($role) === 'D') ? round($baseCleanSheetProb / $tierMultiplierDefensiveFactor, 2) : 0.0),
+            'mv' => round(max(5.0, min(7.5, $finalMv)), 2),
+            'goals_scored' => round($finalTotalGoals, 3),
+            'assists' => round($finalAssists, 3),
+            'ammonizioni' => $baseYellow,
+            'espulsioni' => $baseRed,
+            'autogol' => $baseOwn,
+            'penalties_taken' => round($finalPenTaken, 3),
+            'penalties_scored' => round($finalPenScored, 3),
+            'penalties_missed' => round($finalPenMissed, 3),
+            'rigori_parati' => ($roleKey === 'P' ? round($basePenSaved * $tierDefensive, 3) : 0.0),
+            'gol_subiti' => ($roleKey === 'P' ? round(max(0, $finalGoalsConceded), 2) : 0.0),
+            'clean_sheet' => (($roleKey === 'P' || $roleKey === 'D') ? round(max(0, min(1, $finalCleanSheet)), 2) : 0.0),
         ];
     }
 }
