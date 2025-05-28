@@ -220,65 +220,123 @@ class ProjectionEngineService
     private function applyAdjustmentsAndEstimatePresences(array $weightedStatsPerGame, Player $player, UserLeagueProfile $leagueProfile): array
     {
         $adjustedStatsPerGame = $weightedStatsPerGame;
+        $ageModifier = 1.0; // Default, nessun modificatore
         
-        $teamTier = $player->team ? $player->team->tier : 3;
-        $tierMultiplier = 1.0;
-        // Questi moltiplicatori sono esemplificativi e andrebbero raffinati
-        switch ($teamTier) {
-            case 1: $tierMultiplier = 1.15; break; // Squadra Top
-            case 2: $tierMultiplier = 1.05; break; // Squadra Buona
-            case 3: $tierMultiplier = 1.0;  break; // Squadra Media
-            case 4: $tierMultiplier = 0.95; break; // Squadra Debole
-            case 5: $tierMultiplier = 0.85; break; // Squadra Molto Debole
+        // Carica la configurazione delle curve di età
+        $ageCurveConfigData = config('player_age_curves.dati_ruoli');
+        $ageModParams = config('player_age_curves.age_modifier_params');
+        
+        if ($player->date_of_birth && $ageCurveConfigData && $ageModParams) {
+            $age = $player->date_of_birth->age;
+            Log::debug("ProjectionEngineService: Giocatore {$player->name}, Età: {$age}");
+            
+            $roleKey = strtoupper($player->role);
+            // Gestione preliminare per ruoli Difensivi specifici se hai intenzione di usare D_CENTRALE/D_ESTERNO
+            // Per ora, se il ruolo è 'D', usiamo una configurazione generica per 'D' o una media.
+            // O, per semplicità iniziale, mappa tutti i 'D' a 'D_CENTRALE' o a una nuova entry 'D' nel config.
+            // Per questo esempio, aggiungo una chiave 'D' generica al config se non hai distinto
+            // Se non c'è 'D' ma ci sono 'D_CENTRALE' e 'D_ESTERNO', scegliamo D_CENTRALE come fallback per 'D'.
+            if ($roleKey === 'D' && !isset($ageCurveConfigData[$roleKey])) {
+                $config = $ageCurveConfigData['D_CENTRALE'] ?? ($ageCurveConfigData['D_ESTERNO'] ?? null); // Fallback
+            } else {
+                $config = $ageCurveConfigData[$roleKey] ?? null;
+            }
+            
+            
+            if ($config) {
+                if ($age <= $config['fasi_carriera']['sviluppo_fino_a']) {
+                    // Fase di sviluppo, potrebbe essere prima di peak_start
+                    $ageModifier = min($config['young_cap'], 1.0 + (($config['fasi_carriera']['picco_inizio'] - $age) * $config['growth_factor']));
+                } elseif ($age >= $config['fasi_carriera']['picco_inizio'] && $age <= $config['fasi_carriera']['picco_fine']) {
+                    // Fase di picco - ageModifier rimane 1.0 o un piccolo bonus
+                    // $ageModifier = 1.02; // Esempio di piccolo bonus per il picco
+                } elseif ($age > $config['fasi_carriera']['picco_fine'] && $age <= $config['fasi_carriera']['mantenimento_fino_a']) {
+                    // Fase di mantenimento/declino graduale
+                    // Applica una frazione del decline_factor o un decline_factor più piccolo
+                    $declineFactorGradual = $config['decline_factor'] * 0.5; // Esempio: metà del fattore di declino
+                    $ageModifier = max($config['old_cap'], 1.0 - (($age - $config['fasi_carriera']['picco_fine']) * $declineFactorGradual));
+                } elseif ($age >= $config['fasi_carriera']['declino_da']) {
+                    // Fase di declino più marcato
+                    // Calcola il declino a partire dalla fine del picco per continuità, o da decline_da per un salto
+                    $effectiveDeclineStartAge = $config['fasi_carriera']['picco_fine']; // O $config['fasi_carriera']['declino_da'] se vuoi un "salto"
+                    $ageModifier = max($config['old_cap'], 1.0 - (($age - $effectiveDeclineStartAge) * $config['decline_factor']));
+                }
+                // Assicurati che ageModifier non sia diventato 0 o negativo se i calcoli sono strani
+                $ageModifier = max(0.1, $ageModifier); // Minimo 0.1
+                
+                Log::debug("ProjectionEngineService: Giocatore {$player->name}, Età: {$age}, Ruolo: {$roleKey}, Config Ruolo: " . json_encode($config) . ", Modificatore Età Calcolato: {$ageModifier}");
+                
+                if (isset($adjustedStatsPerGame['avg_rating'])) {
+                    $adjustedStatsPerGame['avg_rating'] *= (1 + ($ageModifier - 1) * $ageModParams['mv_effect_ratio']);
+                    $adjustedStatsPerGame['avg_rating'] = round($adjustedStatsPerGame['avg_rating'], 4);
+                }
+                foreach (['goals_scored', 'assists'] as $key) {
+                    if (isset($adjustedStatsPerGame[$key])) {
+                        $adjustedStatsPerGame[$key] *= $ageModifier;
+                    }
+                }
+            } else {
+                Log::warning("ProjectionEngineService: Nessuna configurazione curva età trovata per Ruolo: {$roleKey} per giocatore {$player->name}.");
+            }
+        } else {
+            Log::debug("ProjectionEngineService: Data di nascita non disponibile per {$player->name} o configurazione curve età mancante, salto aggiustamento età.");
         }
+        // --- FINE BLOCCO AGGIUSTAMENTO ETÀ ---
         
-        // Applica il moltiplicatore alle statistiche offensive PER PARTITA
+        // --- BLOCCO TIER SQUADRA (come prima, assicurati che $player->team->tier sia corretto) ---
+        $teamTier = $player->team?->tier ?? 3;
+        $offensiveTierFactors = [1 => 1.15, 2 => 1.05, 3 => 1.00, 4 => 0.95, 5 => 0.85]; // Da config?
+        $defensiveTierFactors = [1 => 0.85, 2 => 0.95, 3 => 1.00, 4 => 1.05, 5 => 1.15]; // Da config?
+        $tierMultiplierOffensive = $offensiveTierFactors[$teamTier] ?? 1.0;
+        $tierMultiplierDefensive = $defensiveTierFactors[$teamTier] ?? 1.0;
+        
         foreach (['goals_scored', 'assists'] as $key) {
             if (isset($adjustedStatsPerGame[$key])) {
-                $adjustedStatsPerGame[$key] *= $tierMultiplier;
+                $adjustedStatsPerGame[$key] *= $tierMultiplierOffensive;
             }
         }
-        // Per i difensori/portieri, il tier potrebbe influenzare i gol subiti o clean sheet in modo inverso.
-        if (isset($adjustedStatsPerGame['goals_conceded']) && $tierMultiplier != 0) { // Evita divisione per zero
-            // Se tierMultiplier > 1 per squadre forti (che subiscono meno), dividiamo
-            if ($player->role === 'P' || $player->role === 'D') {
-                $adjustedStatsPerGame['goals_conceded'] /= $tierMultiplier;
+        if (strtoupper($player->role) === 'P') {
+            if (isset($adjustedStatsPerGame['goals_conceded'])) {
+                $adjustedStatsPerGame['goals_conceded'] *= $tierMultiplierDefensive;
             }
         }
+        // --- FINE BLOCCO TIER SQUADRA ---
         
         
-        // TODO: Aggiungere aggiustamenti per età, ruolo tattico specifico, rigoristi (da stats Rc/R+), etc.
-        //       sempre operando sulle medie PER PARTITA.
-        
-        // TODO: Calcolare 'clean_sheet_per_game_proj' basandosi sul ruolo, tier squadra, e storico.
-        // Esempio molto grezzo per clean_sheet_per_game_proj:
-        $adjustedStatsPerGame['clean_sheet_per_game_proj'] = 0.0; // Default
-        if ($player->role === 'P' || $player->role === 'D') {
-            // Logica più complessa qui: potrebbe basarsi sulla media storica dei gol subiti dalla squadra,
-            // o da una stima della forza difensiva del team tier.
-            // Per ora, un valore di esempio molto grezzo:
-            if ($teamTier == 1) $adjustedStatsPerGame['clean_sheet_per_game_proj'] = 0.35; // 35% di prob.
-            else if ($teamTier == 2) $adjustedStatsPerGame['clean_sheet_per_game_proj'] = 0.25;
-            else if ($teamTier == 3) $adjustedStatsPerGame['clean_sheet_per_game_proj'] = 0.15;
-            else $adjustedStatsPerGame['clean_sheet_per_game_proj'] = 0.10;
+        // --- BLOCCO PROIEZIONE CLEAN SHEET (come prima, con $ageModParams) ---
+        $adjustedStatsPerGame['clean_sheet_per_game_proj'] = 0.0;
+        if (strtoupper($player->role) === 'P' || strtoupper($player->role) === 'D') {
+            $baseCleanSheetProb = [1 => 0.40, 2 => 0.30, 3 => 0.20, 4 => 0.15, 5 => 0.10]; // Da config?
+            $probCS = $baseCleanSheetProb[$teamTier] ?? 0.10;
+            $probCS *= (1 + ($ageModifier - 1) * $ageModParams['cs_age_effect_ratio']);
+            $adjustedStatsPerGame['clean_sheet_per_game_proj'] = max(0.05, min(0.75, round($probCS,3)));
         }
+        // --- FINE BLOCCO PROIEZIONE CLEAN SHEET ---
         
+        // --- BLOCCO STIMA PRESENZE (come prima, con $ageModParams) ---
+        $basePresenze = $weightedStatsPerGame['avg_games_played'] ?? 20;
+        $presenzeTierFactor = 1 + (($tierMultiplierOffensive - 1) * 0.3);
+        $presenzeAgeFactor = $ageModifier;
+        if ($ageModifier < 1.0) {
+            $presenzeAgeFactor = 1 - ((1 - $ageModifier) * $ageModParams['presenze_decline_effect_ratio']);
+            $presenzeAgeFactor = max($ageModParams['presenze_decline_cap'], $presenzeAgeFactor);
+        } elseif ($ageModifier > 1.0) {
+            $presenzeAgeFactor = 1 + (($ageModifier - 1) * $ageModParams['presenze_growth_effect_ratio']);
+            $presenzeAgeFactor = min($ageModParams['presenze_growth_cap'], $presenzeAgeFactor);
+        }
+        $presenzeAttese = round($basePresenze * $presenzeTierFactor * $presenzeAgeFactor);
+        $presenzeAttese = max(5, min(38, (int)$presenzeAttese));
+        Log::debug("ProjectionEngineService: Stima Presenze per {$player->name} - Base:{$basePresenze}, TierFactor:{$presenzeTierFactor}, AgeFactor:{$presenzeAgeFactor} => Finale:{$presenzeAttese}");
+        // --- FINE BLOCCO STIMA PRESENZE ---
         
-        // Stima le presenze attese
-        // 'avg_games_played' è la media ponderata delle presenze storiche calcolata prima.
-        $basePresenze = $adjustedStatsPerGame['avg_games_played'] ?? ($player->historicalStats()->avg('games_played') ?: 20);
-        
-        // Il tier può influenzare anche le presenze (es. titolare in top team gioca di più)
-        // Questa è una semplificazione, la stima delle presenze è complessa.
-        $presenzeAttese = round($basePresenze * (1 + (($tierMultiplier-1)*0.5) ) ); // Modulazione più leggera del tierMultiplier per le presenze
-        $presenzeAttese = max(1, min(38, (int)$presenzeAttese));
-        
-        
-        // Rimuoviamo avg_games_played dalle stats per partita poiché ora abbiamo presenze_attese separate
         if (isset($adjustedStatsPerGame['avg_games_played'])) {
             unset($adjustedStatsPerGame['avg_games_played']);
         }
-        
+        foreach($adjustedStatsPerGame as $key => &$value) {
+            if(is_numeric($value)) {
+                $value = round($value, 4);
+            }
+        }
         return [
             'adjusted_stats_per_game' => $adjustedStatsPerGame,
             'presenze_attese' => $presenzeAttese,
