@@ -107,7 +107,11 @@ return [
 
     'prefix' => env('CACHE_PREFIX', Str::slug(env('APP_NAME', 'laravel'), '_').'_cache'),
     
+    // Fantaproject
     'ttl_api_squad' => env('CACHE_TTL_API_SQUAD_HOURS', 1), // Ore
-    'ttl_api_teams' => env('CACHE_TTL_API_TEAMS_DAYS', 1), // Giorni
-
+    'ttl_api_teams' => env('CACHE_TTL_API_TEAMS_DAYS', 1), // Giorni    
+    'ttl_api_standings_recent' => env('CACHE_TTL_API_STANDINGS_RECENT_HOURS', 6), // Ore
+    'ttl_api_standings_historical' => env('CACHE_TTL_API_STANDINGS_HISTORICAL_DAYS', 30), // Giorni
+    'ttl_api_standings_recent_hours' => env('CACHE_TTL_API_STANDINGS_RECENT_HOURS', 6),
+    'ttl_api_standings_historical_days' => env('CACHE_TTL_API_STANDINGS_HISTORICAL_DAYS', 30),
 ];

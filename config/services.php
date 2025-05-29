@@ -32,7 +32,9 @@ return [
     'football_data' => [
         'key' => env('FOOTBALL_DATA_API_KEY'),
         'base_uri' => env('FOOTBALL_DATA_API_BASE_URI', 'https://api.football-data.org/v4/'),
-        'serie_a_code' => 'SA', // Codice per la Serie A (verifica se è corretto per v4)
+        'serie_a_code' => 'SA',
+        'serie_b_code' => 'SB', // Aggiungi questo se conosci il codice per la Serie B
+        'api_delay_seconds' => env('FOOTBALL_DATA_API_DELAY_SECONDS', 7), // Delay tra chiamate API in batch
     ],
 
 ];
