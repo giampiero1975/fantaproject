@@ -6,7 +6,7 @@ use App\Models\Team;
 use App\Models\TeamHistoricalStanding;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Collection;
+// use Illuminate\Support\Collection; // Non usata direttamente, ma Eloquent la usa
 
 class TeamTieringService
 {
@@ -17,232 +17,265 @@ class TeamTieringService
         $this->config = Config::get('team_tiering_settings');
         if (empty($this->config)) {
             Log::error(self::class . " Errore: File di configurazione 'team_tiering_settings.php' non trovato o vuoto.");
-            // Potresti voler lanciare un'eccezione qui per bloccare l'uso del servizio se la config è vitale
+            // Considera di lanciare un'eccezione se la config è vitale per il funzionamento del servizio
+            // throw new \Exception("Configurazione team_tiering_settings mancante.");
         }
     }
     
     /**
-     * Metodo principale per aggiornare i tier di tutte le squadre di Serie A per una stagione target.
+     * Metodo principale per aggiornare i tier di tutte le squadre (marcate come serie_a_team)
+     * per una stagione target specifica.
      *
      * @param string $targetSeasonYear Es. "2024-25" (la stagione PER CUI si calcola il tier)
-     * @return array Conteggio dei team aggiornati per tier
+     * @return array Conteggio dei team aggiornati per tier, distribuzione e punteggi
      */
     public function updateAllTeamTiersForSeason(string $targetSeasonYear): array
     {
         Log::info(self::class . ": Inizio calcolo e aggiornamento tier per la stagione target {$targetSeasonYear}");
         
-        // Consideriamo i team che sono marcati come serie_a_team nel DB,
-        // presumendo che il TeamSeeder o altri processi li tengano aggiornati
-        // per la stagione corrente/prossima.
         $teamsToTier = Team::where('serie_a_team', true)->get();
         
         if ($teamsToTier->isEmpty()) {
-            Log::warning(self::class . ": Nessuna squadra di Serie A trovata nel database per il tiering.");
-            return ['updated_count' => 0, 'tier_distribution' => []];
+            Log::warning(self::class . ": Nessuna squadra con 'serie_a_team = true' trovata nel database per il tiering della stagione {$targetSeasonYear}.");
+            return ['updated_count' => 0, 'tier_distribution' => array_fill(1, 5, 0), 'team_scores' => []];
         }
+        Log::info(self::class . ": Trovate {$teamsToTier->count()} squadre da tierizzare (serie_a_team=true) per la stagione {$targetSeasonYear}.");
         
         $teamStrengthScores = [];
         foreach ($teamsToTier as $team) {
             $strengthScore = $this->calculateTeamStrengthScore($team, $targetSeasonYear);
+            // Anche se calculateTeamStrengthScore ora restituisce un default per neopromosse,
+            // manteniamo il controllo per una maggiore robustezza nel caso restituisca null per altri errori.
             if ($strengthScore !== null) {
                 $teamStrengthScores[$team->id] = [
                     'name' => $team->name,
-                    'score' => $strengthScore
+                    'score' => $strengthScore,
+                    'current_tier' => $team->tier
                 ];
+            } else {
+                Log::warning(self::class.": Punteggio di forza Nullo per {$team->name} (ID: {$team->id}). Sarà escluso dalla normalizzazione e manterrà il tier attuale o riceverà un default se gestito in assignTier.");
             }
         }
         
         if (empty($teamStrengthScores)) {
-            Log::warning(self::class . ": Nessun punteggio di forza calcolato per le squadre.");
-            return ['updated_count' => 0, 'tier_distribution' => []];
+            Log::warning(self::class . ": Nessun punteggio di forza calcolato per le squadre eleggibili.");
+            return ['updated_count' => 0, 'tier_distribution' => array_fill(1, 5, 0), 'team_scores' => []];
         }
         
-        // Normalizza i punteggi (es. min-max scaling 0-100) se le soglie sono assolute
-        // O prepara per il calcolo dei percentili se le soglie sono basate su percentili
-        $scores = array_column($teamStrengthScores, 'score');
-        $minScore = min($scores);
-        $maxScore = max($scores);
-        
-        $normalizedScores = [];
-        if ($this->config['tier_thresholds_source'] === 'config' && ($maxScore - $minScore) > 0) {
-            foreach ($teamStrengthScores as $teamId => $data) {
-                $normalizedScores[$teamId] = 100 * ($data['score'] - $minScore) / ($maxScore - $minScore);
-                $teamStrengthScores[$teamId]['normalized_score'] = $normalizedScores[$teamId];
-            }
-        } elseif ($this->config['tier_thresholds_source'] === 'config') { // Tutti i punteggi sono uguali
-            foreach ($teamStrengthScores as $teamId => $data) {
-                $normalizedScores[$teamId] = 50; // Valore medio arbitrario se tutti uguali
-                $teamStrengthScores[$teamId]['normalized_score'] = $normalizedScores[$teamId];
-            }
-        }
-        
-        
-        $updatedCount = 0;
-        $tierDistribution = array_fill(1, 5, 0); // Inizializza conteggio per tier 1-5
-        
-        foreach ($teamsToTier as $team) {
-            if (!isset($teamStrengthScores[$team->id])) {
-                Log::warning(self::class.": Punteggio di forza non disponibile per {$team->name} (ID: {$team->id}), tier non aggiornato.");
-                continue;
+        // Prepara i punteggi per la normalizzazione o per i percentili
+        // Escludi i team per cui non è stato possibile calcolare uno score valido (se calculateTeamStrengthScore potesse restituire null)
+        $validScores = array_filter(array_column($teamStrengthScores, 'score'), function($score) {
+            return $score !== null;
+        });
+            
+            $minScore = !empty($validScores) ? min($validScores) : 0;
+            $maxScore = !empty($validScores) ? max($validScores) : 100; // Default a 100 se non ci sono score o c'è solo uno
+            
+            $normalizedScoresMap = [];
+            
+            if ($this->config['normalization_method'] === 'min_max') {
+                foreach ($teamStrengthScores as $teamId => $data) {
+                    if ($data['score'] === null) {
+                        $normalizedScoresMap[$teamId] = null;
+                        $teamStrengthScores[$teamId]['normalized_score'] = 'N/A (No Score)';
+                        continue;
+                    }
+                    if (($maxScore - $minScore) > 0) {
+                        $normalizedScoreValue = 100 * ($data['score'] - $minScore) / ($maxScore - $minScore);
+                    } else {
+                        $normalizedScoreValue = 50;
+                    }
+                    $normalizedScoresMap[$teamId] = $normalizedScoreValue;
+                    $teamStrengthScores[$teamId]['normalized_score'] = round($normalizedScoreValue, 2);
+                }
+            } else {
+                foreach ($teamStrengthScores as $teamId => $data) {
+                    $normalizedScoresMap[$teamId] = $data['score'];
+                    $teamStrengthScores[$teamId]['normalized_score'] = 'N/A (Raw Used)';
+                }
             }
             
-            $currentScore = $teamStrengthScores[$team->id]['score'];
-            $normalizedScore = $normalizedScores[$team->id] ?? null; // Usato solo se tier_thresholds_source è 'config'
+            $updatedCount = 0;
+            $tierDistribution = array_fill(1, 5, 0);
             
-            $assignedTier = $this->assignTier($currentScore, $normalizedScore, $scores);
-            
-            if ($team->tier != $assignedTier) {
-                Log::info(self::class . ": Aggiornamento tier per {$team->name} (ID: {$team->id}): Vecchio Tier {$team->tier}, Nuovo Tier {$assignedTier}, Punteggio Forza: {$currentScore}" . ($normalizedScore !== null ? ", Norm: {$normalizedScore}" : ""));
-                $team->tier = $assignedTier;
-                $team->save();
-                $updatedCount++;
+            foreach ($teamsToTier as $team) {
+                $assignedTier = $team->tier; // Inizia con il tier attuale come fallback
+                
+                if (isset($teamStrengthScores[$team->id]) && $teamStrengthScores[$team->id]['score'] !== null) {
+                    $currentRawScore = $teamStrengthScores[$team->id]['score'];
+                    $scoreToUseForTiering = $normalizedScoresMap[$team->id] ?? $currentRawScore; // Usa normalizzato se c'è, altrimenti grezzo (se normalization = 'none')
+                    
+                    // Passa l'array di tutti i punteggi validi (grezzi) se il metodo è percentile
+                    $allValidRawScoresForPercentile = ($this->config['tier_thresholds_source'] === 'dynamic_percentiles') ? $validScores : [];
+                    $assignedTier = $this->assignTier($currentRawScore, $scoreToUseForTiering, $allValidRawScoresForPercentile);
+                } else {
+                    // Se non c'è punteggio, potrebbe essere una squadra appena aggiunta senza storico o un errore.
+                    // Potremmo assegnarle il 'newly_promoted_tier_default' o mantenere il suo tier attuale.
+                    // La logica in calculateTeamStrengthScore dovrebbe già aver assegnato un punteggio di default.
+                    // Se arriva qui con score nullo, è un caso anomalo.
+                    Log::warning(self::class.": Punteggio di forza Nullo per {$team->name} (ID: {$team->id}) anche dopo il calcolo, il tier non verrà modificato da questo score.");
+                }
+                
+                if ($team->tier != $assignedTier) {
+                    Log::info(self::class . ": Aggiornamento tier per {$team->name} (ID: {$team->id}): Vecchio Tier {$team->tier}, Nuovo Tier {$assignedTier}, P.Forza: " . ($teamStrengthScores[$team->id]['score'] ?? 'N/A') . ", Norm/Used: " . ($teamStrengthScores[$team->id]['normalized_score'] ?? ($teamStrengthScores[$team->id]['score'] ?? 'N/A')));
+                    $team->tier = $assignedTier;
+                    $team->save();
+                    $updatedCount++;
+                }
+                if (isset($tierDistribution[$assignedTier])) {
+                    $tierDistribution[$assignedTier]++;
+                } else {
+                    Log::warning(self::class.": Tier {$assignedTier} non valido assegnato a {$team->name}.");
+                }
             }
-            $tierDistribution[$assignedTier]++;
-        }
-        
-        Log::info(self::class . ": Aggiornamento tier completato. Squadre aggiornate: {$updatedCount}. Distribuzione Tier: " . json_encode($tierDistribution));
-        return ['updated_count' => $updatedCount, 'tier_distribution' => $tierDistribution, 'team_scores' => $teamStrengthScores];
+            
+            Log::info(self::class . ": Aggiornamento tier completato per {$targetSeasonYear}. Squadre aggiornate: {$updatedCount}. Distribuzione Tier: " . json_encode($tierDistribution));
+            return ['updated_count' => $updatedCount, 'tier_distribution' => $tierDistribution, 'team_scores' => $teamStrengthScores];
     }
     
-    /**
-     * Calcola il punteggio di forza di una squadra basato sullo storico.
-     *
-     * @param Team $team
-     * @param string $targetSeasonYear Es. "2024-25"
-     * @return float|null Punteggio di forza o null se non calcolabile
-     */
     private function calculateTeamStrengthScore(Team $team, string $targetSeasonYear): ?float
     {
-        $lookbackSeasons = $this->config['lookback_seasons_for_tiering'] ?? 3;
-        $seasonWeights = $this->config['season_weights'] ?? [0.5, 0.3, 0.2]; // Assicurati che la lunghezza corrisponda a lookbackSeasons
+        $lookbackSeasonsCount = $this->config['lookback_seasons_for_tiering'] ?? 3;
+        $seasonWeightsConfig = $this->config['season_weights'] ?? [0.5, 0.3, 0.2];
         $metricWeights = $this->config['metric_weights'] ?? ['points' => 1.0];
         
-        // Determina gli anni di inizio stagione per cui cercare i dati storici
-        // Se targetSeasonYear è "2024-25", l'anno di inizio è 2024.
-        // La stagione precedente è "2023-24", con inizio 2023.
         $targetStartYear = (int)substr($targetSeasonYear, 0, 4);
-        $historicalSeasonStartYears = [];
-        for ($i = 0; $i < $lookbackSeasons; $i++) {
-            $historicalSeasonStartYears[] = $targetStartYear - 1 - $i;
+        $historicalSeasonDbStrings = [];
+        for ($i = 0; $i < $lookbackSeasonsCount; $i++) {
+            $year = $targetStartYear - 1 - $i; // t-1, t-2, t-3...
+            $historicalSeasonDbStrings[] = $year . '-' . substr($year + 1, 2, 2);
         }
         
         $historicalStandings = TeamHistoricalStanding::where('team_id', $team->id)
-        ->whereIn('season_year', array_map(function($year) {
-            return $year . '-' . substr($year + 1, 2, 2);
-        }, $historicalSeasonStartYears))
-        ->orderBy('season_year', 'desc') // La più recente per prima
+        ->whereIn('season_year', $historicalSeasonDbStrings)
+        ->orderBy('season_year', 'desc') // La più recente per prima, per allineare con i pesi
         ->get();
         
-        if ($historicalStandings->count() < $lookbackSeasons && $historicalStandings->count() > 0) {
-            Log::warning(self::class.": {$team->name} ha solo {$historicalStandings->count()}/{$lookbackSeasons} stagioni storiche. Il calcolo del tier potrebbe essere meno accurato.");
-        } elseif ($historicalStandings->isEmpty()) {
-            Log::warning(self::class.": Nessun dato storico trovato per {$team->name} nelle stagioni richieste. Assegno tier di default per neopromossa/sconosciuta.");
-            // Potresti voler restituire un punteggio che porti al tier di default per neopromosse.
-            // Per ora, restituiamo null e lasciamo che updateAllTeamTiers gestisca il caso.
-            // Oppure, potremmo avere una logica qui per assegnare un punteggio molto basso.
-            // Per un punteggio che porti a un tier di default (es. 4 o 5), potremmo restituire un valore basso.
-            // Questo dipende da come sono impostate le soglie. Se 0-30 è tier 5, e 30-50 è tier 4.
-            $defaultTierForNew = $this->config['newly_promoted_tier_default'] ?? 4;
-            // Trova un punteggio che corrisponda a quel tier
-            if ($this->config['tier_thresholds_source'] === 'config') {
-                $thresholds = $this->config['tier_thresholds_config'] ?? [1=>85, 2=>70, 3=>50, 4=>30, 5=>0];
-                return (float)($thresholds[$defaultTierForNew] ?? 25); // Ritorna il limite inferiore o un valore nel range
-            }
-            return null; // Se non si usa config per soglie, diventa più complesso dare un punteggio default
+        if ($historicalStandings->isEmpty()) {
+            Log::warning(self::class.": Nessun dato storico trovato per {$team->name} (ID: {$team->id}) nelle stagioni di lookback richieste (target {$targetSeasonYear} -> controllo: " . implode(', ', $historicalSeasonDbStrings) . "). Assegno punteggio grezzo per neopromossa/sconosciuta.");
+            return (float)($this->config['newly_promoted_raw_score_target'] ?? 25.0); // Da config
         }
         
-        $weightedSeasonScores = [];
-        $totalWeightUsed = 0;
+        if ($historicalStandings->count() < $lookbackSeasonsCount) {
+            Log::warning(self::class.": {$team->name} (ID: {$team->id}) ha solo {$historicalStandings->count()}/{$lookbackSeasonsCount} stagioni storiche nelle stagioni di lookback. Il calcolo del tier potrebbe essere meno accurato.");
+        }
+        
+        $weightedSeasonMetricsSum = 0;
+        $totalSeasonWeightApplied = 0;
+        
+        // Adatta i pesi stagionali al numero effettivo di stagioni storiche trovate, mantenendo la priorità alle più recenti
+        $applicableSeasonWeights = array_slice($seasonWeightsConfig, 0, $historicalStandings->count());
+        $sumOfApplicableWeights = array_sum($applicableSeasonWeights);
+        if ($sumOfApplicableWeights > 0 && abs($sumOfApplicableWeights - 1.0) > 1e-9) { // Normalizza se non sommano a 1
+            $applicableSeasonWeights = array_map(function($w) use ($sumOfApplicableWeights) {
+                return $w / $sumOfApplicableWeights;
+            }, $applicableSeasonWeights);
+        }
+        
         
         foreach ($historicalStandings as $index => $standing) {
-            if (!isset($seasonWeights[$index])) {
-                Log::warning(self::class.": Peso stagione mancante per indice {$index} per team {$team->name}. Salto questa stagione.");
+            // L'index qui è 0 per la più recente tra quelle trovate, 1 per la successiva, ecc.
+            // Questo corrisponde all'ordine di $applicableSeasonWeights
+            if (!isset($applicableSeasonWeights[$index])) {
+                // Questo non dovrebbe succedere se $applicableSeasonWeights è derivato da $historicalStandings->count()
+                Log::error(self::class.": Errore logico: Peso stagione mancante per indice {$index} (stagione {$standing->season_year}) per team {$team->name}.");
                 continue;
             }
-            $seasonWeight = $seasonWeights[$index];
-            $currentSeasonScore = 0;
+            $seasonWeight = $applicableSeasonWeights[$index];
+            $currentSeasonRawScore = 0; // FIX: Inizializzazione
             $totalMetricWeightUsedThisSeason = 0;
             
             foreach ($metricWeights as $metric => $metricWeight) {
                 if (isset($standing->{$metric}) && $standing->{$metric} !== null) {
                     $value = (float)$standing->{$metric};
-                    if ($metric === 'position') { // Inverti la posizione (1° è meglio)
-                        // Semplice inversione: max_pos (es. 20) - pos + 1. O normalizza diversamente.
-                        // Per ora, un modo semplice è usare 1/posizione, poi si normalizzerà globalmente.
-                        // O, se si normalizza per metrica: (max_pos - pos) / (max_pos - min_pos)
-                        // Temporaneamente, usiamo una scala: (21 - posizione) -> più alto è meglio
-                        $value = 21 - $value;
+                    if ($metric === 'position') {
+                        // Inversione e scaling semplice (1°=20, ..., 20°=1). Adattare il 21 se le leghe hanno #diverso di squadre
+                        // O meglio, normalizzare la posizione rispetto al min/max di quella lega/stagione
+                        $value = max(0, ( ($standing->league_name === 'Serie B' ? 21 : 21) - $value)); // Assumendo 20 squadre
                     }
-                    $currentSeasonScore += $value * $metricWeight;
+                    $currentSeasonRawScore += $value * $metricWeight;
                     $totalMetricWeightUsedThisSeason += $metricWeight;
                 }
             }
             
             if ($totalMetricWeightUsedThisSeason > 0) {
-                // Normalizza il punteggio della stagione se i pesi delle metriche non sommano a 1
-                // $currentSeasonScore = $currentSeasonScore / $totalMetricWeightUsedThisSeason;
-                // Non normalizzare qui, la normalizzazione globale dei punteggi finali è più robusta
-                $weightedSeasonScores[] = $currentSeasonScore * $seasonWeight;
-                $totalWeightUsed += $seasonWeight;
+                // Normalizza il punteggio della stagione se i pesi delle metriche non sommano a 1 (opzionale, ma buona pratica)
+                // $currentSeasonRawScore = $currentSeasonRawScore / $totalMetricWeightUsedThisSeason;
+                
+                $leagueStrengthMultipliers = $this->config['league_strength_multipliers'] ?? ['Serie A' => 1.0, 'Serie B' => 0.7];
+                $leagueMultiplier = $leagueStrengthMultipliers[$standing->league_name] ?? ($standing->league_name === 'Serie A' ? 1.0 : 0.6); // Fallback
+                $seasonScoreAdjustedForLeague = $currentSeasonRawScore * $leagueMultiplier;
+                
+                Log::debug(self::class.": Team {$team->name}, Stag. {$standing->season_year} ({$standing->league_name}), P.Stag.Grezzo: {$currentSeasonRawScore}, MultiLega: {$leagueMultiplier}, P.Stag.Agg: {$seasonScoreAdjustedForLeague}, PesoStag: {$seasonWeight}");
+                
+                $weightedSeasonMetricsSum += $seasonScoreAdjustedForLeague * $seasonWeight;
+                $totalSeasonWeightApplied += $seasonWeight;
+            } else {
+                Log::warning(self::class.": Nessuna metrica valida trovata per {$team->name} nella stagione {$standing->season_year} ({$standing->league_name}). Punteggio stagione sarà 0.");
             }
         }
         
-        if ($totalWeightUsed == 0 || empty($weightedSeasonScores)) {
-            Log::warning(self::class.": Impossibile calcolare un punteggio stagione pesato per {$team->name}. Pesi usati: {$totalWeightUsed}");
-            return null;
+        if ($totalSeasonWeightApplied == 0) { // Può succedere se non ci sono dati per le metriche in nessuna stagione
+            Log::warning(self::class.": Impossibile calcolare un punteggio finale pesato per {$team->name} (ID: {$team->id}). Nessun peso stagione applicato. Assegno punteggio neopromossa.");
+            return (float)($this->config['newly_promoted_raw_score_target'] ?? 25.0);
         }
         
-        // Il punteggio finale è la somma dei punteggi stagione pesati, normalizzata per la somma dei pesi usati
-        $finalStrengthScore = array_sum($weightedSeasonScores) / $totalWeightUsed;
-        Log::info(self::class.": Punteggio forza calcolato per {$team->name}: {$finalStrengthScore}");
+        $finalStrengthScore = $weightedSeasonMetricsSum / $totalSeasonWeightApplied;
+        Log::info(self::class.": Punteggio forza calcolato per {$team->name} (ID: {$team->id}): {$finalStrengthScore}");
         return $finalStrengthScore;
     }
     
-    /**
-     * Assegna un tier basato sul punteggio di forza.
-     *
-     * @param float $strengthScore Punteggio grezzo
-     * @param float|null $normalizedScore Punteggio normalizzato (0-100), se applicabile
-     * @param array $allScores Array di tutti i punteggi grezzi (per percentile)
-     * @return int Tier assegnato
-     */
-    private function assignTier(float $strengthScore, ?float $normalizedScore, array $allScores): int
+    private function assignTier(float $strengthScore, ?float $scoreToUseForThresholds, array $allValidRawScores): int
     {
-        if ($this->config['tier_thresholds_source'] === 'config') {
-            $thresholds = $this->config['tier_thresholds_config'] ?? [1=>85, 2=>70, 3=>50, 4=>30, 5=>0];
-            // Le soglie sono il limite INFERIORE per quel tier (punteggio >= soglia)
-            // Quindi, se normalizedScore è 90, è Tier 1 (>=85)
-            // Se è 75, è Tier 2 (>=70)
-            // Se è 35, è Tier 4 (>=30)
-            // Se è 10, è Tier 5 (>=0)
-            // Iteriamo dal tier più alto (1) al più basso (5)
-            for ($tier = 1; $tier <= 5; $tier++) {
-                if (isset($thresholds[$tier]) && $normalizedScore >= $thresholds[$tier]) {
-                    return $tier;
-                }
-            }
-            return 5; // Default tier più basso se nessuna soglia corrisponde (non dovrebbe succedere con 5=>0)
-        } elseif ($this->config['tier_thresholds_source'] === 'dynamic_percentiles') {
-            $percentilesConfig = $this->config['tier_percentiles_config'] ?? [1=>0.80, 2=>0.60, 3=>0.40, 4=>0.20, 5=>0.0];
-            sort($allScores); // Ordina i punteggi grezzi
-            $count = count($allScores);
-            
-            // Iteriamo dal tier più alto (1) al più basso (5)
-            foreach($percentilesConfig as $tier => $percentileValue) {
-                $index = floor($percentileValue * ($count -1)); // Indice del percentile
-                $thresholdScore = $allScores[$index];
-                if($strengthScore >= $thresholdScore) {
-                    // Caso speciale per l'ultimo percentile (0.0) che potrebbe includere tutti se il punteggio è esattamente il minimo
-                    // Se è l'ultimo tier della config e stiamo ancora valutando, assegna questo tier.
-                    if ($percentileValue == min(array_values($percentilesConfig))) return $tier;
-                    // Altrimenti, se il punteggio è >= soglia del percentile, è quel tier
-                    return $tier;
-                }
-            }
-            return 5; // Default al tier più basso
+        $defaultTier = $this->config['newly_promoted_tier_default'] ?? 4;
+        
+        if ($scoreToUseForThresholds === null) { // Caso in cui non si è potuto calcolare lo score per le soglie
+            Log::warning(self::class.": Punteggio Nullo passato a assignTier. Assegno tier di default per neopromossa: {$defaultTier}.");
+            return $defaultTier;
         }
         
-        Log::warning(self::class.": Metodo soglie tier non riconosciuto: " . $this->config['tier_thresholds_source'] . ". Ritorno tier di default 5.");
-        return 5; // Fallback
+        if ($this->config['tier_thresholds_source'] === 'config') {
+            $thresholds = $this->config['tier_thresholds_config'] ?? [1=>85, 2=>70, 3=>50, 4=>30, 5=>0];
+            // $scoreToUseForThresholds qui è il punteggio normalizzato (0-100)
+            foreach ($thresholds as $tier => $minNormalizedScore) {
+                if ($scoreToUseForThresholds >= $minNormalizedScore) {
+                    return (int)$tier;
+                }
+            }
+            return 5; // Default tier più basso
+        } elseif ($this->config['tier_thresholds_source'] === 'dynamic_percentiles') {
+            $percentilesConfig = $this->config['tier_percentiles_config'] ?? [1=>0.80, 2=>0.60, 3=>0.40, 4=>0.20, 5=>0.0];
+            if (empty($allValidRawScores)) { // Se non ci sono altri score per confronto
+                Log::warning(self::class.": Array 'allValidRawScores' vuoto per tiering percentile. Assegno default {$defaultTier}.");
+                return $defaultTier;
+            }
+            
+            sort($allValidRawScores);
+            $count = count($allValidRawScores);
+            $assignedTier = 5; // Default al tier più basso
+            
+            // Itera dal tier più alto (es. Tier 1 con percentile più alto)
+            // La config dei percentili deve essere ordinata dal Tier più desiderabile/forte a quello meno
+            // Es. 'tier_percentiles_config' => [1 => 0.80 (Top 20%), 2 => 0.60 (Top 40%-20%), ...]
+            // ksort($percentilesConfig); // Assicura che sia ordinato per chiave Tier (1, 2, 3, 4, 5)
+            
+            // Ordiniamo i percentili in modo decrescente per trovare il match corretto
+            // Es. Tier 1 = Punteggio >= 80° percentile; Tier 2 = Punteggio >= 60° percentile, etc.
+            $sortedPercentileTiers = $percentilesConfig;
+            arsort($sortedPercentileTiers); // Ordina per valore percentile decrescente, mantenendo le chiavi (tier)
+            
+            foreach ($sortedPercentileTiers as $tier => $percentile) {
+                $index = max(0, floor($percentile * ($count -1) ));
+                $thresholdScoreForThisTier = $allValidRawScores[$index];
+                if ($strengthScore >= $thresholdScoreForThisTier) {
+                    $assignedTier = (int)$tier;
+                    break;
+                }
+            }
+            return $assignedTier;
+        }
+        
+        Log::warning(self::class.": Metodo soglie tier non riconosciuto: " . ($this->config['tier_thresholds_source'] ?? 'N/D') . ". Ritorno tier di default {$defaultTier}.");
+        return $defaultTier;
     }
 }
