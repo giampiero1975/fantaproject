@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services;
+namespace App\Console\Commands;
 
 use App\Models\Player;
 use App\Models\HistoricalPlayerStat;
