@@ -87,4 +87,20 @@ return [
     'fallback_fm_if_no_history' => 5.5,
     'fallback_gp_if_no_history' => 0,
     
+    'player_stats_league_conversion_factors' => [
+        'Serie A' => [ // Da Serie A alla Serie A (fattore 1)
+            'goals_scored' => 1.0,
+            'assists' => 1.0,
+            'avg_rating' => 1.0,
+            // Aggiungi altre stats se vuoi applicare fattori specifici anche per loro
+        ],
+        'Serie B' => [ // Fattori per convertire stats da Serie B a livello atteso Serie A
+            'goals_scored' => 0.60,  // Esempio: 10 gol in B -> 6.0 gol base attesi in A (per partita)
+            'assists'      => 0.65,  // Esempio: 10 assist in B -> 6.5 assist base attesi in A (per partita)
+            'avg_rating'   => 0.95,  // Esempio: MV 6.5 in B -> MV ~6.17 base attesa in A
+        ],
+        // Potresti aggiungere 'Default' o un codice per 'AltroCampionato' con fattori ancora più bassi
+        // se hai giocatori con storico da leghe considerate inferiori alla Serie B.
+    ],
+    
 ];

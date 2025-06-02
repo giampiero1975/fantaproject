@@ -39,8 +39,9 @@ class TestPlayerProjectionCommand extends Command
         $player = Player::with('team')->where('fanta_platform_id', $playerId)->first();
         
         if (!$player) {
-            $this->error("Giocatore con fanta_platform_id {$playerId} non trovato.");
-            return Command::FAILURE;
+            $this->error("Giocatore con fanta_platform_id {$playerId} non trovato nel database.");
+            Log::error("TestPlayerProjectionCommand: Giocatore con fanta_platform_id {$playerId} non trovato.");
+            return Command::FAILURE; // O un altro codice di errore appropriato
         }
         
         // Gestione del nome della squadra in modo sicuro

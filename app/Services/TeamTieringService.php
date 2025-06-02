@@ -225,54 +225,56 @@ class TeamTieringService
         return $finalStrengthScore;
     }
     
-    private function assignTier(float $strengthScore, ?float $scoreToUseForThresholds, array $allValidRawScores): int
+    // In app/Services/TeamTieringService.php
+    private function assignTier(float $rawStrengthScore, ?float $scoreToUseForThresholds, array $allValidRawScoresForPercentile): int
     {
-        $defaultTier = $this->config['newly_promoted_tier_default'] ?? 4;
-        
-        if ($scoreToUseForThresholds === null) { // Caso in cui non si è potuto calcolare lo score per le soglie
-            Log::warning(self::class.": Punteggio Nullo passato a assignTier. Assegno tier di default per neopromossa: {$defaultTier}.");
-            return $defaultTier;
-        }
+        $defaultTier = $this->config['newly_promoted_tier_default'] ?? 4; // O 5 se preferisci
         
         if ($this->config['tier_thresholds_source'] === 'config') {
+            if ($scoreToUseForThresholds === null) {
+                Log::warning(self::class.": Punteggio ('scoreToUseForThresholds') Nullo passato a assignTier con source 'config'. Assegno tier di default: {$defaultTier}.");
+                return $defaultTier;
+            }
+            // $scoreToUseForThresholds è il punteggio normalizzato (0-100)
             $thresholds = $this->config['tier_thresholds_config'] ?? [1=>85, 2=>70, 3=>50, 4=>30, 5=>0];
-            // $scoreToUseForThresholds qui è il punteggio normalizzato (0-100)
+            // Assicurati che le soglie siano ordinate dalla più alta alla più bassa per un corretto matching
+            // ksort($thresholds); // Se le chiavi (tier) non sono già ordinate 1,2,3,4,5
+            // No, l'iterazione deve essere sul tier, quindi le chiavi devono essere 1,2,3,4,5
+            
             foreach ($thresholds as $tier => $minNormalizedScore) {
-                if ($scoreToUseForThresholds >= $minNormalizedScore) {
+                // Arrotonda leggermente per evitare problemi di floating point vicino alle soglie
+                if (round($scoreToUseForThresholds, 4) >= round($minNormalizedScore, 4)) {
                     return (int)$tier;
                 }
             }
-            return 5; // Default tier più basso
+            Log::warning(self::class.": Nessuna soglia valida trovata per score normalizzato {$scoreToUseForThresholds}. Assegno default tier 5.");
+            return 5; // Default tier più basso se nessuna soglia corrisponde (non dovrebbe succedere con 5=>0)
         } elseif ($this->config['tier_thresholds_source'] === 'dynamic_percentiles') {
-            $percentilesConfig = $this->config['tier_percentiles_config'] ?? [1=>0.80, 2=>0.60, 3=>0.40, 4=>0.20, 5=>0.0];
-            if (empty($allValidRawScores)) { // Se non ci sono altri score per confronto
-                Log::warning(self::class.": Array 'allValidRawScores' vuoto per tiering percentile. Assegno default {$defaultTier}.");
-                return $defaultTier;
-            }
+            // ... (logica percentili come prima) ...
+            // Ricontrolla questa logica se decidi di usarla, è un po' più complessa
+            if (empty($allValidRawScoresForPercentile)) return $defaultTier;
+            sort($allValidRawScoresForPercentile);
+            $count = count($allValidRawScoresForPercentile);
+            $assignedTier = 5;
+            $sortedPercentileTiers = $this->config['tier_percentiles_config'] ?? [1=>0.80, 2=>0.60, 3=>0.40, 4=>0.20, 5=>0.0];
+            // Assicurati che $sortedPercentileTiers sia ordinato per percentile decrescente se vuoi il break
+            // Esempio: [1 => 0.8, 2 => 0.6, 3=>0.4, 4=>0.2, 5=>0.0] - la chiave è il tier, il valore è il percentile
+            // Se il punteggio è >= soglia dell'80 percentile -> Tier 1
+            // Se il punteggio è >= soglia del 60 percentile (ma < 80) -> Tier 2, etc.
             
-            sort($allValidRawScores);
-            $count = count($allValidRawScores);
-            $assignedTier = 5; // Default al tier più basso
-            
-            // Itera dal tier più alto (es. Tier 1 con percentile più alto)
-            // La config dei percentili deve essere ordinata dal Tier più desiderabile/forte a quello meno
-            // Es. 'tier_percentiles_config' => [1 => 0.80 (Top 20%), 2 => 0.60 (Top 40%-20%), ...]
-            // ksort($percentilesConfig); // Assicura che sia ordinato per chiave Tier (1, 2, 3, 4, 5)
-            
-            // Ordiniamo i percentili in modo decrescente per trovare il match corretto
-            // Es. Tier 1 = Punteggio >= 80° percentile; Tier 2 = Punteggio >= 60° percentile, etc.
-            $sortedPercentileTiers = $percentilesConfig;
-            arsort($sortedPercentileTiers); // Ordina per valore percentile decrescente, mantenendo le chiavi (tier)
-            
-            foreach ($sortedPercentileTiers as $tier => $percentile) {
-                $index = max(0, floor($percentile * ($count -1) ));
-                $thresholdScoreForThisTier = $allValidRawScores[$index];
-                if ($strengthScore >= $thresholdScoreForThisTier) {
-                    $assignedTier = (int)$tier;
-                    break;
+            // Corretto approccio per percentili:
+            // Tier 1: score >= percentile(0.80)
+            // Tier 2: score >= percentile(0.60) AND score < percentile(0.80)
+            // etc.
+            // Oppure, itera DAL TIER PIU' ALTO:
+            foreach($sortedPercentileTiers as $tier => $percentileValue){
+                $index = max(0, floor($percentileValue * ($count -1) ));
+                $thresholdScore = $allValidRawScoresForPercentile[$index];
+                if($rawStrengthScore >= $thresholdScore){ // Confronta il punteggio GREZZO con le soglie di percentile GREZZE
+                    return (int)$tier; // Assegna il primo (e quindi miglior) tier che soddisfa
                 }
             }
-            return $assignedTier;
+            return 5; // Se non rientra in nessuno, è nel percentile più basso (Tier 5)
         }
         
         Log::warning(self::class.": Metodo soglie tier non riconosciuto: " . ($this->config['tier_thresholds_source'] ?? 'N/D') . ". Ritorno tier di default {$defaultTier}.");

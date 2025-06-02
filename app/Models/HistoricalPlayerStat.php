@@ -30,6 +30,7 @@ class HistoricalPlayerStat extends Model
         'yellow_cards',
         'red_cards',
         'own_goals',
+        'league_name' 
     ];
     
     public function team()

@@ -25,30 +25,42 @@ return [
     // Sorgente per le soglie dei tier:
     // 'config': usa le soglie definite in 'tier_thresholds_config'
     // 'dynamic_percentiles': calcola soglie basate sui percentili dei punteggi di tutte le squadre (vedi 'tier_percentiles_config')
-    'tier_thresholds_source' => 'config',
+    // 'tier_thresholds_source' => 'config',
     
     // Soglie per i tier se tier_thresholds_source è 'config'
     // Basate sul punteggio normalizzato (0-100), dove 100 è il migliore.
     // La chiave è il Tier, il valore è il punteggio MINIMO normalizzato per rientrare in quel tier.
     // Assicurati che siano in ordine decrescente di punteggio.
+    'tier_thresholds_source' => 'dynamic_percentiles',
     'tier_thresholds_config' => [
-        1 => 85, // Punteggio >= 85  => Tier 1
-        2 => 70, // Punteggio >= 70  => Tier 2
-        3 => 50, // Punteggio >= 50  => Tier 3
-        4 => 30, // Punteggio >= 30  => Tier 4
-        5 => 0,  // Punteggio >= 0   => Tier 5 (tutte le altre)
+        1 => 73,  // Per le prime 3 (Inter, Napoli, Atalanta)
+        2 => 58,  // Per le successive 3 (Milan, Juventus, Roma)
+        3 => 47,  // Per le successive 4 (Lazio, Fiorentina, Bologna, e la prossima più alta)
+        4 => 18,  // Per le successive 4 (es. Como, Torino, e altre due neopromosse)
+        5 => 0,   // Le rimanenti 6
     ],
     
     // Configurazione dei percentili se tier_thresholds_source è 'dynamic_percentiles'
     // La chiave è il Tier, il valore è il percentile INFERIORE del punteggio grezzo per quel tier.
     // Es. Tier 1: top X% (es. 80° percentile in su), Tier 2: successivo Y% (es. tra 60° e 80° percentile)
-    'tier_percentiles_config' => [
-        1 => 0.80, // Le squadre sopra l'80° percentile dei punteggi sono Tier 1
-        2 => 0.60, // Tra il 60° e l'80° percentile sono Tier 2
-        3 => 0.40, // Tra il 40° e il 60° percentile sono Tier 3
-        4 => 0.20, // Tra il 20° e il 40° percentile sono Tier 4
-        5 => 0.0,  // Sotto il 20° percentile sono Tier 5
+    // 'tier_thresholds_source' => 'config',
+    /*
+    'tier_percentiles_config' => [ // Percentile INFERIORE per quel tier
+        1 => 0.90, // Le squadre nel top 25% (punteggio >= 75° percentile) sono Tier 1
+        2 => 0.70, // Le squadre tra il 55° e il 75° percentile sono Tier 2
+        3 => 0.50, // Tra il 35° e il 55°
+        4 => 0.30, // Tra il 15° e il 35°
+        5 => 0.0,  // Sotto il 15° percentile
     ],
+    */
+    'tier_percentiles_config' => [
+        1 => 0.85, // Le squadre con punteggio grezzo >= 85° percentile
+        2 => 0.70, // Punteggio grezzo >= 70° percentile (e < 85°)
+        3 => 0.50, // Punteggio grezzo >= 50° percentile (e < 70°)
+        4 => 0.30, // Punteggio grezzo >= 30° percentile (e < 50°)
+        5 => 0.0,  // Punteggio grezzo >= 0° percentile (e < 30°)
+    ],
+    
     
     // Tier di default per le squadre neopromosse o per cui non si trovano dati storici sufficienti
     'newly_promoted_tier_default' => 5,
@@ -65,7 +77,7 @@ return [
     
     'league_strength_multipliers' => [
         'Serie A' => 1.0,
-        'Serie B' => 0.75, // Esempio: una stagione in B vale il 70% di una in A a parità di metriche
+        'Serie B' => 0.65, // Esempio: una stagione in B vale il 70% di una in A a parità di metriche
         // Aggiungi altre leghe se necessario
     ],
 ];
