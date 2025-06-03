@@ -54,11 +54,11 @@ return [
     ],
     */
     'tier_percentiles_config' => [
-        1 => 0.85, // Le squadre con punteggio grezzo >= 85° percentile
-        2 => 0.70, // Punteggio grezzo >= 70° percentile (e < 85°)
-        3 => 0.50, // Punteggio grezzo >= 50° percentile (e < 70°)
-        4 => 0.30, // Punteggio grezzo >= 30° percentile (e < 50°)
-        5 => 0.0,  // Punteggio grezzo >= 0° percentile (e < 30°)
+        1 => 0.90, 
+        2 => 0.70,
+        3 => 0.50,
+        4 => 0.30,
+        5 => 0.0,
     ],
     
     
