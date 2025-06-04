@@ -1,7 +1,3 @@
-Certamente! Prima di procedere con il TeamTieringService, facciamo un
-riepilogo sintetico delle modifiche e poi prepariamo la documentazione
-per i comandi Artisan che abbiamo creato e modificato.
-
 **Fix Sintetico (Commit Message Suggerito):**
 
 feat(data-import): Enhance team data import and historical standings
@@ -223,9 +219,8 @@ gestione dei dati.
 
 - **Esempi:**\
   Bash\
-  php artisan teams:import-standings-file
-  storage/app/import/classifica_serie_a_2021-22.csv
-  \--season-start-year=2021\
+  php artisan teams:import-standings-file storage/app/import/classifica_serie_a_2021-22.csv  \--season-start-year=2021\
+  
   php artisan teams:import-standings-file
   storage/app/import/classifica_serie_b_2022-23.csv
   \--season-start-year=2022 \--league-name=\"Serie B\"
@@ -258,15 +253,11 @@ Manutenzione):**
 2.  **Popolamento Storico Classifiche (una tantum o per stagioni non
     API):**
 
-    - Per ogni stagione/lega per cui hai un file CSV: php artisan
-      teams:import-standings-file path/al/tuo.csv
-      \--season-start-year=YYYY \--league-name=\"Nome Lega\"
-      \--create-missing-teams=true \...
+    - Per ogni stagione/lega per cui hai un file CSV: 
+	  php artisan teams:import-standings-file path/al/tuo.csv \--season-start-year=YYYY \--league-name=\"Nome Lega\" \--create-missing-teams=true
 
-    - Dopo aver importato CSV che potrebbero aver creato nuovi team che
-      erano in Serie A (o lo saranno), riesegui: php artisan
-      teams:map-api-ids \--competition=SA (per tentare di mappare gli ID
-      API ai nuovi team).
+    - Dopo aver importato CSV che potrebbero aver creato nuovi team che erano in Serie A (o lo saranno), riesegui: 
+	  php artisan teams:map-api-ids \--competition=SA (per tentare di mappare gli ID API ai nuovi team).
 
 3.  **Download Storico Classifiche via API (per stagioni accessibili):**
 
