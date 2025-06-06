@@ -8,7 +8,7 @@ use App\Models\UserLeagueProfile;
 use App\Services\ProjectionEngineService;
 use App\Models\ImportLog;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Str; // <-- AGGIUNTA LA RIGA MANCANTE
+use Illuminate\Support\Str;
 
 class GeneratePlayerProjections extends Command
 {
@@ -19,7 +19,8 @@ class GeneratePlayerProjections extends Command
      */
     protected $signature = 'players:generate-projections
                             {--player_id= : ID specifico di un giocatore (dal DB) da processare}
-                            {--role= : Ruolo specifico da processare (P, D, C, A)}';
+                            {--role= : Ruolo specifico da processare (P, D, C, A)}
+                            {--force : Forza la rigenerazione delle proiezioni anche se esistenti}';
     
     /**
      * The console command description.
@@ -41,6 +42,8 @@ class GeneratePlayerProjections extends Command
     {
         parent::__construct();
         $this->projectionEngine = $projectionEngine;
+        // Carica il profilo lega di default qui.
+        // È cruciale che questo carichi un'istanza di modello e non solo dati raw.
         $this->leagueProfile = UserLeagueProfile::first();
     }
     
@@ -51,8 +54,10 @@ class GeneratePlayerProjections extends Command
      */
     public function handle()
     {
-        // Carica il profilo lega di default. Assumiamo ID=1 o il primo disponibile.
-        $this->leagueProfile = UserLeagueProfile::first();
+        // Ricontrolla il profilo lega qui per sicurezza,
+        // ma dovrebbe già essere stato caricato nel costruttore.
+        // Se si preferisce, si può anche ricaricarlo:
+        // $this->leagueProfile = UserLeagueProfile::first();
         
         if (!$this->leagueProfile) {
             $this->error("Profilo Lega non trovato. Crea un profilo lega prima di generare le proiezioni.");
@@ -60,15 +65,23 @@ class GeneratePlayerProjections extends Command
             return Command::FAILURE;
         }
         
+        $forceRegeneration = $this->option('force');
+        
         $this->info("Avvio Generazione Proiezioni Finali usando il profilo lega: '{$this->leagueProfile->name}'");
-        Log::info(self::class . ": Avvio generazione proiezioni.");
+        if ($forceRegeneration) {
+            $this->warn("Modalità FORCED: Tutte le proiezioni esistenti verranno sovrascritte.");
+        } else {
+            $this->info("Modalità standard: Le proiezioni esistenti e valide non verranno sovrascritte.");
+        }
+        Log::info(self::class . ": Avvio generazione proiezioni (Force: " . ($forceRegeneration ? 'true' : 'false') . ").");
         
         $startTime = microtime(true);
         $processedCount = 0;
+        $skippedCount = 0;
         $failedCount = 0;
         
         $query = Player::query()
-        ->whereNotNull('role') // Processa solo giocatori con un ruolo definito
+        ->whereNotNull('role')
         ->whereIn('role', ['P', 'D', 'C', 'A']);
         
         if ($this->option('player_id')) {
@@ -93,8 +106,21 @@ class GeneratePlayerProjections extends Command
         
         foreach ($players as $player) {
             $bar->advance();
+            
+            if (!$forceRegeneration &&
+                $player->avg_rating_proj !== null &&
+                $player->fanta_mv_proj !== null &&
+                $player->games_played_proj !== null &&
+                $player->total_fanta_points_proj !== null)
+            {
+                $this->getOutput()->newLine();
+                $this->info("Saltato {$player->name} (ID: {$player->id}): Proiezioni già presenti e --force non specificato.");
+                Log::info(self::class . ": Saltato player ID {$player->id} - Proiezioni esistenti.");
+                $skippedCount++;
+                continue;
+            }
+            
             try {
-                // Chiama il "cervello" per ottenere l'array completo di proiezioni
                 $projections = $this->projectionEngine->generatePlayerProjection($player, $this->leagueProfile);
                 
                 if (empty($projections)) {
@@ -105,12 +131,12 @@ class GeneratePlayerProjections extends Command
                     continue;
                 }
                 
-                // Ora usiamo la versione pulita, che si aspetta tutte le chiavi
+                // Aggiorna solo i campi di proiezione specifici
                 $player->update([
-                    'avg_rating_proj'       => $projections['avg_rating_proj'],
-                    'fanta_mv_proj'         => $projections['fanta_mv_proj'],
-                    'games_played_proj'     => $projections['games_played_proj'],
-                    'total_fanta_points_proj' => $projections['total_fanta_points_proj'],
+                    'avg_rating_proj'       => $projections['mv_proj_per_game'] ?? null, // Aggiunto ?? null
+                    'fanta_mv_proj'         => $projections['fanta_media_proj_per_game'] ?? null, // Aggiunto ?? null
+                    'games_played_proj'     => $projections['presenze_proj'] ?? null, // Aggiunto ?? null
+                    'total_fanta_points_proj' => $projections['total_fantasy_points_proj'] ?? null, // Aggiunto ?? null
                 ]);
                 $processedCount++;
                 
@@ -129,6 +155,7 @@ class GeneratePlayerProjections extends Command
         $duration = microtime(true) - $startTime;
         $summary = "Generazione proiezioni completata in " . round($duration, 2) . " sec. " .
             "Giocatori processati con successo: {$processedCount}. " .
+            "Giocatori saltati: {$skippedCount}. " .
             "Fallimenti: {$failedCount}.";
         
         $this->info("\n" . $summary);
@@ -137,9 +164,9 @@ class GeneratePlayerProjections extends Command
         ImportLog::create([
             'original_file_name' => 'Generazione Proiezioni Finali',
             'import_type' => 'generate_projections',
-            'status' => $failedCount > 0 ? ($processedCount > 0 ? 'parziale' : 'fallito') : 'successo',
+            'status' => $failedCount > 0 ? ($processedCount > 0 || $skippedCount > 0 ? 'parziale' : 'fallito') : 'successo',
             'details' => $summary,
-            'rows_processed' => $processedCount + $failedCount,
+            'rows_processed' => $processedCount + $failedCount + $skippedCount,
             'rows_updated' => $processedCount,
             'rows_failed' => $failedCount,
         ]);

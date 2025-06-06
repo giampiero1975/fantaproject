@@ -14,7 +14,7 @@ class FantasyPointCalculatorService
      * @param string $playerRole Il ruolo del giocatore (P, D, C, A) per applicare bonus/malus specifici per ruolo.
      * @return float Il totale dei fantapunti calcolati.
      */
-    public function calculateFantasyPoints(array $stats, string $scoringRules, string $playerRole): float
+    public function calculateFantasyPoints(array $stats, array $scoringRules, string $playerRole): float
     {
         // Log di input per debug
         Log::debug("FantasyPointCalculatorService: Ricevute stats: " . json_encode($stats) . " con regole: " . json_encode($scoringRules) . " e ruolo: " . $playerRole);

@@ -5,11 +5,12 @@ namespace App\Console\Commands;
 use Illuminate\Console\Command;
 use App\Models\PlayerFbrefStat;
 use App\Models\HistoricalPlayerStat;
-use App\Models\Player;
-use App\Models\Team;
-use App\Models\ImportLog;
+use App\Models\Player; // Importa il modello Player
+use App\Models\Team;   // Importa il modello Team
+use App\Models\ImportLog; // Importa il modello ImportLog
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\DB; // Per transazioni se necessario
+use Illuminate\Support\Facades\Config; // Per accedere alla configurazione
 
 class ProcessFbrefStatsToHistorical extends Command
 {
@@ -30,9 +31,20 @@ class ProcessFbrefStatsToHistorical extends Command
      */
     protected $description = 'Processa i dati grezzi da player_fbref_stats e li salva/aggiorna in historical_player_stats.';
     
+    /**
+     * Fattori di conversione da lega a lega, caricati dalla configurazione.
+     * @var array
+     */
+    protected array $leagueConversionFactors;
+    
     public function __construct()
     {
         parent::__construct();
+        // Carica i fattori di conversione dalla configurazione
+        $this->leagueConversionFactors = Config::get('projection_settings.player_stats_league_conversion_factors', []);
+        if (empty($this->leagueConversionFactors)) {
+            Log::warning(self::class . ": 'player_stats_league_conversion_factors' non configurati o vuoti in config/projection_settings.php. Le statistiche non verranno convertite.");
+        }
     }
     
     public function handle()
@@ -74,6 +86,7 @@ class ProcessFbrefStatsToHistorical extends Command
             $bar->advance();
             $processedRecords++;
             
+            // Verifica che il giocatore e la squadra associati esistano
             if (!$fbrefStat->player) {
                 $this->getOutput()->newLine();
                 $this->warn("Saltato record FBRef ID {$fbrefStat->id}: Player associato non trovato (player_id: {$fbrefStat->player_id}).");
@@ -96,15 +109,19 @@ class ProcessFbrefStatsToHistorical extends Command
                 continue;
             }
             
-            // Mappatura dei campi da player_fbref_stats a historical_player_stats
+            // Ottieni i fattori di conversione per la lega di origine
+            $conversionFactors = $this->leagueConversionFactors[$fbrefStat->league_name] ??
+            ($this->leagueConversionFactors['default'] ?? ['goals_scored' => 1.0, 'assists' => 1.0, 'avg_rating' => 1.0]);
+            
+            // Mappatura e conversione dei campi
             $dataToStore = [
                 'team_name_for_season'     => $fbrefStat->team->name,
                 'role_for_season'          => $fbrefStat->player->role,
                 'games_played'             => $fbrefStat->games_played ?? 0,
-                'avg_rating'               => null, // FBRef non fornisce MV standard, quindi lo lasciamo nullo
-                'fanta_avg_rating'         => null,
-                'goals_scored'             => (int)round($fbrefStat->goals ?? 0),
-                'assists'                  => (int)round($fbrefStat->assists ?? 0),
+                'avg_rating'               => null, // FBRef non fornisce MV standard, quindi lo lasciamo nullo o lo stimiamo con una base poi modulata dalla conversione
+                'fanta_avg_rating'         => null, // Verrà calcolata dal ProjectionEngineService
+                'goals_scored'             => (int)round(($fbrefStat->goals ?? 0) * ($conversionFactors['goals_scored'] ?? 1.0)),
+                'assists'                  => (int)round(($fbrefStat->assists ?? 0) * ($conversionFactors['assists'] ?? 1.0)),
                 'yellow_cards'             => $fbrefStat->yellow_cards ?? 0,
                 'red_cards'                => $fbrefStat->red_cards ?? 0,
                 'own_goals'                => $fbrefStat->misc_own_goals ?? 0,
@@ -113,7 +130,15 @@ class ProcessFbrefStatsToHistorical extends Command
                 'penalties_missed'         => ($fbrefStat->penalties_attempted ?? 0) - ($fbrefStat->penalties_made ?? 0),
                 'goals_conceded'           => ($fbrefStat->player->role === 'P') ? ($fbrefStat->gk_goals_conceded ?? 0) : 0,
                 'penalties_saved'          => ($fbrefStat->player->role === 'P') ? ($fbrefStat->gk_penalties_saved ?? 0) : 0,
+                // Assicurati che 'mantra_role_for_season' sia popolato se disponibile da fbrefStat o da Player
+                'mantra_role_for_season'   => $fbrefStat->player->mantra_role ?? null, // Assumendo che il ruolo Mantra sia nel modello Player o FbrefStat
             ];
+            
+            // Se la Media Voto non è direttamente disponibile da FBRef, puoi decidere di stimarla o lasciarla NULL.
+            // Per ora, la lasciamo NULL come indicato nel piano, ma può essere un punto di miglioramento futuro.
+            // Oppure, se si ha una stima della MV per lega (es. da memo per statistiche neopromosse.md), si può applicare qui.
+            // Esempio: Se `MedieVotoOriginale` dal CSV avanzato fosse disponibile, e si stimava MV per Serie B.
+            // $dataToStore['avg_rating'] = ($fbrefStat->avg_rating_original ?? 6.0) * ($conversionFactors['avg_rating'] ?? 1.0);
             
             try {
                 // Chiavi univoche per identificare un record in historical_player_stats
@@ -121,9 +146,10 @@ class ProcessFbrefStatsToHistorical extends Command
                     'player_fanta_platform_id' => $fbrefStat->player->fanta_platform_id,
                     'season_year'              => $fbrefStat->season_year . '-' . substr($fbrefStat->season_year + 1, 2),
                     'team_id'                  => $fbrefStat->team_id,
-                    'league_name'              => $fbrefStat->league_name,
+                    'league_name'              => $fbrefStat->league_name, // Il nome della lega di origine dei dati FBRef
                 ];
                 
+                $historicalStat = null;
                 if ($this->option('overwrite')) {
                     $historicalStat = HistoricalPlayerStat::updateOrCreate($uniqueKeys, $dataToStore);
                 } else {
@@ -132,7 +158,7 @@ class ProcessFbrefStatsToHistorical extends Command
                 
                 if ($historicalStat->wasRecentlyCreated) {
                     $createdRecords++;
-                } elseif ($this->option('overwrite') && $historicalStat->wasChanged()) {
+                } elseif ($historicalStat && $this->option('overwrite') && $historicalStat->wasChanged()) {
                     $updatedRecords++;
                 }
             } catch (\Exception $e) {
@@ -157,6 +183,7 @@ class ProcessFbrefStatsToHistorical extends Command
         $this->info("\n" . $summary);
         Log::info(self::class . ": " . $summary);
         
+        // Registra l'operazione nel log degli import
         ImportLog::create([
             'original_file_name' => 'Processamento FBRef a Storico' . ($this->option('season') ? ' Stagione ' . $this->option('season') : ' Tutte'),
             'import_type' => 'fbref_processing',
