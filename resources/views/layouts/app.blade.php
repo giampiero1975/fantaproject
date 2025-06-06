@@ -4,26 +4,33 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>@yield('title', 'FantaProject')</title>
+
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+
+    <link rel="stylesheet" href="{{ asset('css/dashboard.css') }}">
+
+    {{-- Eventuali altri stili globali dell'applicazione potrebbero rimanere qui o essere in un altro file CSS --}}
     <style>
-        body { font-family: sans-serif; margin: 0; }
+        body { font-family: sans-serif; margin: 0; background-color: #f4f6f9; }
         .navbar { background-color: #333; overflow: hidden; }
         .navbar a { float: left; display: block; color: white; text-align: center; padding: 14px 16px; text-decoration: none; }
         .navbar a:hover { background-color: #ddd; color: black; }
-        .container { padding: 20px; }
-        .content { margin-top: 20px; }
-        .alert { padding: 15px; margin-bottom: 20px; border: 1px solid transparent; border-radius: 4px; }
-        .alert-success { color: #155724; background-color: #d4edda; border-color: #c3e6cb; }
-        .alert-danger { color: #721c24; background-color: #f8d7da; border-color: #f5c6cb; }
-        .alert-danger ul { margin-top: 0; margin-bottom: 0; padding-left: 20px; }
+         .alert { padding: 15px; margin-bottom: 20px; border: 1px solid transparent; border-radius: 4px; }
+         .alert-success { color: #155724; background-color: #d4edda; border-color: #c3e6cb; }
+         .alert-danger { color: #721c24; background-color: #f8d7da; border-color: #f5c6cb; }
+         .alert-danger ul { margin-top: 0; margin-bottom: 0; padding-left: 20px; }
     </style>
 </head>
+
 <body>
-    // In resources/views/layouts/app.blade.php, dentro la navbar
-	<nav class="navbar">
-        <a href="{{ route('welcome') }}">Home</a>
+	{{-- In resources/views/layouts/app.blade.php, dentro la navbar --}}
+    <nav class="navbar">
+        <a href="{{ route('dashboard') }}">Home</a>
         <a href="{{ route('roster.show') }}">Carica Roster</a>
         <a href="{{ route('historical_stats.show_upload_form') }}">Carica Statistiche</a>
-        <a href="{{ route('league.profile.edit') }}">Profilo Lega</a> {{-- NUOVO LINK --}}
+        <a href="{{ route('league.profile.edit') }}">Profilo Lega</a>
     </nav>
 
     <div class="container">
@@ -67,6 +74,13 @@
             <p>&copy; {{ date('Y') }} FantaProject</p>
         </footer>
     </div>
-
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+    // Inizializza tutti i tooltip nella pagina
+    var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'))
+    var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
+      return new bootstrap.Tooltip(tooltipTriggerEl)
+    })
+</script>
     </body>
 </html>

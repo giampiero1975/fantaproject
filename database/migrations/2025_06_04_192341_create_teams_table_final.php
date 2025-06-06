@@ -8,11 +8,15 @@ return new class extends Migration
     {
         Schema::create('teams', function (Blueprint $table) {
             $table->id();
-            $table->string('name')->unique()->comment('Nome ufficiale della squadra (es. Inter, Milan)');
-            $table->string('short_name')->nullable()->comment('Nome breve o abbreviazione (es. INT, MIL)');
-            $table->boolean('serie_a_team')->default(true)->comment('Indica se la squadra è attualmente in Serie A');
-            $table->integer('tier')->nullable()->comment('Fascia di forza della squadra (es. 1=Top, 2=Europa, 3=Metà, 4=Salvezza)');
-            $table->integer('api_football_data_team_id')->nullable()->unique()->comment('ID della squadra sull\'API Football-Data.org');
+            $table->string('name')->unique(); // Nome ufficiale della squadra
+            $table->string('short_name')->nullable(); // Nome breve
+            $table->string('tla')->nullable(); // Acronimo di tre lettere (es. JUV)
+            $table->string('crest_url')->nullable(); // URL dello stemma
+            $table->boolean('serie_a_team')->default(false)->index(); // Flag per Serie A
+            $table->integer('tier')->nullable()->index(); // Tier calcolato
+            $table->unsignedBigInteger('fanta_platform_id')->nullable()->unique()->comment('ID usato dalla piattaforma Fantacalcio (es. IDGazzetta)');
+            $table->integer('api_football_data_id')->unique()->nullable()->comment('ID usato da football-data.org');
+            $table->string('league_code')->nullable()->index()->comment('Codice lega attuale (SA, SB) da football-data.org');
             $table->timestamps();
         });
     }
