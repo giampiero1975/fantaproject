@@ -9,47 +9,36 @@ class UserLeagueProfile extends Model
 {
     use HasFactory;
     
+    /**
+     * The attributes that are mass assignable.
+     *
+     * @var array<int, string>
+     */
     protected $fillable = [
-        'user_id',
-        'league_name',
-        'total_budget',
-        'num_goalkeepers',
-        'num_defenders',
-        'num_midfielders',
-        'num_attackers',
-        'num_participants',
+        'name',
+        'participants',
+        'budget',
+        'goalkeepers_limit',
+        'defenders_limit',
+        'midfielders_limit',
+        'forwards_limit',
         'scoring_rules',
+        'weights_config',
+        'age_curves_config',
+        'regression_config',
     ];
     
     /**
      * The attributes that should be cast.
+     * Questo dice a Laravel di convertire automaticamente le colonne JSON in array PHP
+     * quando accedi al modello, e viceversa quando salvi.
      *
      * @var array
      */
     protected $casts = [
-        'scoring_rules' => 'array', // Se decidi di salvare le regole come JSON
-        'total_budget' => 'integer',
-        'num_goalkeepers' => 'integer',
-        'num_defenders' => 'integer',
-        'num_midfielders' => 'integer',
-        'num_attackers' => 'integer',
-        'num_participants' => 'integer',
+        'scoring_rules'     => 'array',
+        'weights_config'    => 'array',
+        'age_curves_config' => 'array',
+        'regression_config' => 'array',
     ];
-    
-    /**
-     * Get the user that owns the league profile.
-     * (Opzionale, se user_id è implementato)
-     */
-    public function user()
-    {
-        return $this->belongsTo(User::class);
-    }
-    
-    /**
-     * Helper per ottenere il numero totale di giocatori nella rosa.
-     */
-    public function getTotalPlayersInRosterAttribute(): int
-    {
-        return $this->num_goalkeepers + $this->num_defenders + $this->num_midfielders + $this->num_attackers;
-    }
 }

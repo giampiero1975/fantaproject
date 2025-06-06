@@ -78,6 +78,7 @@
                     'artisan_commands' => ["php artisan players:enrich-data"],
                     'artisan_tooltip' => "<strong>players:enrich-data:</strong> Arricchisce i dati dei giocatori da API esterna (football-data.org).<br>Opzioni:<br> - <code>--player_id=all|ID_DB</code> (Default: all).<br> - <code>--player_name=NOME</code>.<br> - <code>--delay=SECONDI</code> (Default: 6)."
                 ],
+                /*
                 7 => [ // EX FASE 6
                     'data' => $fbrefScrapingStatus,
                     'title_prefix' => '7.',
@@ -96,6 +97,7 @@
                     'artisan_notes' => "Questo comando è DA IMPLEMENTARE. Processerà i dati FBRef.",
                     'artisan_tooltip' => "<strong>stats:process-fbref-to-historical:</strong> (DA IMPLEMENTARE) Processa dati FBRef grezzi e li salva in 'historical_player_stats'.<br>Opzioni: <code>--season</code>, <code>--player_id</code>, <code>--overwrite</code>."
                 ],
+                */
                 9 => [ // EX FASE 8
                     'data' => $otherHistoricalStatsStatus,
                     'title_prefix' => '9.',

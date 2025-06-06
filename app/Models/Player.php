@@ -22,7 +22,11 @@ class Player extends Model
         'date_of_birth',        // NUOVO
         'detailed_position',    // NUOVO
         'api_football_data_id', // NUOVO
-        'api_football_data_team_id'
+        'api_football_data_team_id',
+        'avg_rating_proj',
+        'fanta_mv_proj',
+        'games_played_proj',
+        'total_fanta_points_proj',
     ];
     
     /**
@@ -36,6 +40,10 @@ class Player extends Model
         'initial_quotation' => 'integer',
         'current_quotation' => 'integer',
         'fvm' => 'integer',
+        'avg_rating_proj' => 'float',
+        'fanta_mv_proj' => 'float',
+        'games_played_proj' => 'integer',
+        'total_fanta_points_proj' => 'float',
     ];
     
     /**

@@ -16,7 +16,7 @@ class DatabaseSeeder extends Seeder
     {
         // \App\Models\User::factory(10)->create();
         $this->call([
-            TeamSeeder::class, // Aggiungi questa riga
+            // TeamSeeder::class, // Aggiungi questa riga
             // Aggiungi altri seeder qui se necessario
         ]);
     }

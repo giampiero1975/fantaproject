@@ -1,183 +1,227 @@
 <?php
+
 namespace App\Services;
-// ... (use statements come prima) ...
+
 use App\Models\Team;
 use App\Models\TeamHistoricalStanding;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Cache;
-
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Cache; // Cache non era usata in questa versione, ma la teniamo per consistenza
+use Illuminate\Support\Str; // Se usi Str per qualche normalizzazione specifica
 
 class TeamDataService
 {
-    protected string $apiKey;
-    protected string $baseUri;
-    // Rimuovi $competitionId e $standingsEndpoint dalle proprietà della classe, verranno passati o costruiti nel metodo
-    // protected string $competitionId;
-    // protected string $standingsEndpoint;
+    protected PlayerStatsApiService $apiService;
+    // Rimosso apiKey e baseUri da qui, poiché PlayerStatsApiService ora gestisce le chiamate dirette.
+    // Il TeamDataService ora orchestra e usa PlayerStatsApiService per i dati API.
     
-    
-    public function __construct()
+    public function __construct(PlayerStatsApiService $apiService)
     {
-        $this->apiKey = config('services.football_data.key');
-        $this->baseUri = config('services.football_data.base_uri');
-        // Non inizializzare competitionId qui, sarà un parametro del metodo
+        $this->apiService = $apiService;
+        Log::info("TeamDataService initializzato con PlayerStatsApiService.");
     }
     
-    private function normalizeName(string $name): string // Assicurati che questo metodo esista
+    private function normalizeName(string $name): string
     {
-        // ... (funzione di normalizzazione come prima)
-        $name = strtolower(trim($name));
-        $commonWords = ['fc', 'cfc', 'bc', 'ac', 'ssc', 'us', 'calcio', '1909', '1913', '1919', 'spa', 'srl'];
-        $patterns = [];
-        foreach ($commonWords as $word) {
-            $patterns[] = '/\b' . preg_quote($word, '/') . '\b/';
-        }
-        $patterns[] = '/[0-9]{4}/';
-        $name = preg_replace($patterns, '', $name);
-        $name = preg_replace('/[^\p{L}\p{N}\s]/u', '', $name);
-        $name = preg_replace('/\s+/', ' ', $name);
-        return trim($name);
+        $normalized = strtolower($name);
+        $toRemove = [' fc', ' calcio', ' ac', ' ssc', ' spa', ' 1909', ' 1913', ' 1919', ' asd', 'cf', 'bc', 'us'];
+        $normalized = str_replace($toRemove, '', $normalized);
+        $normalized = preg_replace('/[^\p{L}\p{N}\s-]/u', '', $normalized);
+        $normalized = trim($normalized);
+        return preg_replace('/\s+/', ' ', $normalized);
     }
     
-    // MODIFICA LA FIRMA DEL METODO per accettare $competitionId
-    public function fetchAndStoreSeasonStandings(int $seasonStartYear, string $competitionId = 'SA'): bool
+    public function findTeamByName(string $name, ?string $leagueCode = null): ?Team
     {
-        if (empty($this->apiKey)) {
-            Log::error(self::class . ": API Key non disponibile. Impossibile recuperare classifiche.");
-            return false;
+        $team = Team::where('name', $name)->first();
+        if ($team) {
+            return $team;
+        }
+        $normalizedApiName = $this->normalizeName($name);
+        $teamsInDb = Team::all();
+        foreach ($teamsInDb as $dbTeam) {
+            if ($this->normalizeName($dbTeam->name) === $normalizedApiName) {
+                Log::info("TeamDataService: Trovata corrispondenza normalizzata per nome API '{$name}' con DB nome '{$dbTeam->name}'. ID DB: {$dbTeam->id}");
+                return $dbTeam;
+            }
+            if ($dbTeam->short_name && $this->normalizeName($dbTeam->short_name) === $normalizedApiName) {
+                Log::info("TeamDataService: Trovata corrispondenza normalizzata per nome API '{$name}' con DB short_name '{$dbTeam->short_name}'. ID DB: {$dbTeam->id}");
+                return $dbTeam;
+            }
+            if ($dbTeam->tla && strtolower($dbTeam->tla) === strtolower($name)) {
+                Log::info("TeamDataService: Trovata corrispondenza TLA per nome API '{$name}' con DB TLA '{$dbTeam->tla}'. ID DB: {$dbTeam->id}");
+                return $dbTeam;
+            }
+        }
+        Log::warning("TeamDataService: Squadra non trovata per nome '{$name}' (normalizzato: '{$normalizedApiName}')" . ($leagueCode ? " per lega {$leagueCode}" : ""));
+        return null;
+    }
+    
+    public function findTeamByApiIdOrName(string $apiId, string $apiName, ?string $leagueCode = null): ?Team
+    {
+        if (!empty($apiId) && is_numeric($apiId)) {
+            $team = Team::where('api_football_data_id', (int)$apiId)->first();
+            if ($team) {
+                return $team;
+            }
+        }
+        Log::info("TeamDataService: Team non trovato per API ID {$apiId}. Tentativo di fallback per nome API '{$apiName}'.");
+        return $this->findTeamByName($apiName, $leagueCode);
+    }
+    
+    public function updateOrCreateTeamFromApiData(array $apiTeamData, string $leagueCode): ?Team
+    {
+        if (empty($apiTeamData['id']) || !is_numeric($apiTeamData['id'])) {
+            Log::error("TeamDataService: ID API mancante o non valido per i dati della squadra ricevuti.", ['apiTeamData' => $apiTeamData]);
+            return null;
         }
         
-        // Costruisci l'endpoint usando il $competitionId passato
-        $standingsEndpointTemplate = config('team_tiering_settings.api_football_data.standings_endpoint', 'competitions/{competitionId}/standings?season={year}');
-        $endpoint = str_replace(['{competitionId}', '{year}'], [$competitionId, $seasonStartYear], $standingsEndpointTemplate);
+        $apiTeamId = (int)$apiTeamData['id'];
+        $teamNameFromApi = $apiTeamData['name'] ?? 'Nome Mancante';
+        $shortNameFromApi = $apiTeamData['shortName'] ?? $teamNameFromApi;
+        $tlaFromApi = $apiTeamData['tla'] ?? null;
+        $crestFromApi = $apiTeamData['crest'] ?? null;
         
-        $cacheKey = "football_data_standings_{$competitionId}_{$seasonStartYear}";
-        $currentSeasonStartYear = now()->month >= 7 ? now()->year : now()->year - 1;
-        $cacheDurationHours = ($seasonStartYear >= $currentSeasonStartYear - 1) ? config('cache.ttl_api_standings_recent_hours', 6) : config('cache.ttl_api_standings_historical_days', 30) * 24;
+        Log::info("TeamDataService: Inizio gestione per API ID {$apiTeamId} ('{$teamNameFromApi}'). Dati API:", $apiTeamData);
         
+        $dataForSave = [
+            'name' => $teamNameFromApi,
+            'short_name' => $shortNameFromApi,
+            'tla' => $tlaFromApi,
+            'crest_url' => $crestFromApi,
+            'league_code' => $leagueCode,
+            'api_football_data_id' => $apiTeamId,
+        ];
         
-        Log::info(self::class . ": Tentativo di recuperare classifica per stagione {$seasonStartYear} (Competizione: {$competitionId}) da endpoint: {$this->baseUri}{$endpoint}");
+        try {
+            $team = Team::where('api_football_data_id', $apiTeamId)->first();
+            
+            if ($team) {
+                Log::info("TeamDataService: Trovata squadra esistente per API ID {$apiTeamId}. ID DB: {$team->id}. Nome: '{$team->name}'. Tentativo di aggiornamento.");
+                $team->fill($dataForSave);
+                if ($team->isDirty()) {
+                    $team->save();
+                    Log::info("TeamDataService: AGGIORNATA squadra esistente '{$team->name}' (ID DB: {$team->id}, API ID: {$apiTeamId}).");
+                } else {
+                    Log::info("TeamDataService: Nessun aggiornamento necessario per '{$team->name}' (ID DB: {$team->id}, API ID: {$apiTeamId}). Dati identici.");
+                }
+            } else {
+                Log::info("TeamDataService: Nessuna squadra trovata per API ID {$apiTeamId}. Tentativo di creazione con dati:", $dataForSave);
+                $team = Team::create($dataForSave);
+                Log::info("TeamDataService: CREATA nuova squadra '{$team->name}' (ID DB: {$team->id}, API ID: {$apiTeamId}).");
+            }
+            $team->refresh();
+            return $team;
+            
+        } catch (\Illuminate\Database\QueryException $qe) {
+            Log::error("TeamDataService: ECCEZIONE Query DB durante operazione per API ID {$apiTeamId} ('{$teamNameFromApi}'). Errore: {$qe->getMessage()}", [
+                'sql' => $qe->getSql(),
+                'bindings' => $qe->getBindings(),
+                'exception_trace' => Str::limit($qe->getTraceAsString(), 1000),
+                'apiTeamData' => $apiTeamData
+            ]);
+            return null;
+        } catch (\Exception $e) {
+            Log::error("TeamDataService: ECCEZIONE GENERICA durante operazione per API ID {$apiTeamId} ('{$teamNameFromApi}'). Errore: {$e->getMessage()}", [
+                'exception_trace' => Str::limit($e->getTraceAsString(), 1000),
+                'apiTeamData' => $apiTeamData
+            ]);
+            return null;
+        }
+    }
+    
+    public function saveStandingsFromApiData(array $apiStandingsData, string $competitionCode, string $seasonYear): array
+    {
+        $savedCount = 0;
+        $notFoundInDb = 0;
         
-        $responseJson = Cache::remember($cacheKey, now()->addHours($cacheDurationHours), function () use ($endpoint) {
-            // ... (logica chiamata API e gestione errori/eccezioni come nel codice che ti ho fornito prima) ...
+        if (!isset($apiStandingsData['standings'][0]['table'])) {
+            Log::warning("TeamDataService: Struttura dati classifiche API inattesa per {$competitionCode} stagione {$seasonYear}. 'table' non trovato.", ['apiData' => $apiStandingsData]);
+            return ['saved' => $savedCount, 'notFound' => count($apiStandingsData['standings'][0]['table'] ?? [])];
+        }
+        
+        foreach ($apiStandingsData['standings'][0]['table'] as $apiTeamDataRow) { // Rinominato per chiarezza
+            if (empty($apiTeamDataRow['team']['id']) || !isset($apiTeamDataRow['team']['name'])) {
+                Log::warning("TeamDataService: Dati team incompleti nella classifica API per {$competitionCode} stagione {$seasonYear}.", ['teamData' => $apiTeamDataRow]);
+                $notFoundInDb++;
+                continue;
+            }
+            
+            $apiTeamId = (string)$apiTeamDataRow['team']['id'];
+            $apiTeamName = $apiTeamDataRow['team']['name'];
+            
+            $teamInDb = $this->findTeamByApiIdOrName($apiTeamId, $apiTeamName, $competitionCode);
+            
+            if (!$teamInDb) {
+                Log::warning("TeamDataService: Team locale non trovato per API ID {$apiTeamId} (Nome API: '{$apiTeamName}', Short: '{$apiTeamDataRow['team']['shortName']}', TLA: '{$apiTeamDataRow['team']['tla']}') per {$competitionCode}. Classifica non salvata per {$seasonYear}.");
+                $notFoundInDb++;
+                continue;
+            }
+            
             try {
-                $response = Http::withHeaders(['X-Auth-Token' => $this->apiKey])
-                ->baseUrl($this->baseUri)
-                ->get($endpoint);
-                
-                if ($response->failed()) {
-                    Log::error(self::class . ": Errore API ({$response->status()}) recupero classifiche {$endpoint}. Body: " . substr($response->body(), 0, 500));
-                    return null;
-                }
-                return $response->json();
-                
-            } catch (\Illuminate\Http\Client\ConnectionException $e) {
-                Log::error(self::class . ": Eccezione di connessione API per {$endpoint}: " . $e->getMessage());
-                return null;
-            } catch (\Exception $e) {
-                Log::error(self::class . ": Eccezione generica API per {$endpoint}: " . $e->getMessage());
-                return null;
-            }
-        });
-            // ... (resto del metodo fetchAndStoreSeasonStandings con la logica di parsing della tabella e matching team rimane identica)
-            if (!$responseJson) {
-                Log::error(self::class . ": Recupero fallito da API/cache per classifiche {$competitionId} stagione {$seasonStartYear}.");
-                Cache::forget($cacheKey);
-                return false;
-            }
-            
-            if (isset($responseJson['message']) && isset($responseJson['errorCode']) && $responseJson['errorCode'] == 403) {
-                Log::error(self::class . ": Accesso ristretto API per {$competitionId} stagione {$seasonStartYear}. Msg: " . $responseJson['message']);
-                return false;
-            }
-            
-            if (!isset($responseJson['standings'][0]['table'])) {
-                Log::error(self::class . ": Struttura risposta API non valida per {$competitionId} stagione {$seasonStartYear}. Risposta: " . substr(json_encode($responseJson), 0, 500));
-                Cache::forget($cacheKey);
-                return false;
-            }
-            
-            $table = $responseJson['standings'][0]['table'];
-            $seasonYearString = $seasonStartYear . '-' . substr($seasonStartYear + 1, 2, 2);
-            $teamsProcessedCount = 0;
-            $teamsNotFoundCount = 0;
-            
-            $localTeamsByIdApi = Team::whereNotNull('api_football_data_team_id')->get()->keyBy('api_football_data_team_id');
-            $localTeamsByName = Team::all()->mapWithKeys(function ($team) {
-                $normalizedName = $this->normalizeName($team->name);
-                $normalizedShortName = $this->normalizeName($team->short_name ?? '');
-                $map = [];
-                if ($normalizedName) $map[$normalizedName] = $team;
-                if ($normalizedShortName && $normalizedShortName !== $normalizedName) $map[$normalizedShortName] = $team; // Evita sovrascritture se nome e shortname normalizzati sono uguali
-                return $map;
-            })->filter();
-            
-            
-            foreach ($table as $entry) {
-                $apiTeamId = $entry['team']['id'] ?? null;
-                $apiTeamName = $entry['team']['name'] ?? null;
-                $apiTeamShortName = $entry['team']['shortName'] ?? null;
-                $apiTeamTla = $entry['team']['tla'] ?? null;
-                
-                if (!$apiTeamId || !$apiTeamName) {
-                    Log::warning(self::class . ": ID o Nome squadra API mancante in classifica {$competitionId} stagione {$seasonYearString}. Dati: " . json_encode($entry['team']));
-                    continue;
-                }
-                
-                $team = $localTeamsByIdApi->get($apiTeamId);
-                
-                if (!$team) {
-                    $normalizedApiName = $this->normalizeName($apiTeamName);
-                    $team = $localTeamsByName->get($normalizedApiName);
-                    
-                    if (!$team && $apiTeamShortName) {
-                        $normalizedApiShortName = $this->normalizeName($apiTeamShortName);
-                        $team = $localTeamsByName->get($normalizedApiShortName);
-                    }
-                    if (!$team && $apiTeamTla) {
-                        $normalizedApiTla = $this->normalizeName($apiTeamTla);
-                        $team = $localTeamsByName->get($normalizedApiTla);
-                    }
-                    
-                    if ($team) {
-                        if ($team->api_football_data_team_id != $apiTeamId) {
-                            Log::info(self::class . ": Trovato team '{$team->name}' (DB ID: {$team->id}) per {$competitionId} tramite nome/short/tla. Aggiorno/Imposto api_football_data_team_id a {$apiTeamId}. Nome API: '{$apiTeamName}'");
-                            $team->api_football_data_team_id = $apiTeamId;
-                            $team->save();
-                            $localTeamsByIdApi->put($apiTeamId, $team);
-                        }
-                    }
-                }
-                
-                if (!$team) {
-                    Log::warning(self::class . ": Team locale non trovato per API ID {$apiTeamId} (Nome API: '{$apiTeamName}', Short: '{$apiTeamShortName}', TLA: '{$apiTeamTla}') per {$competitionId}. Classifica non salvata per {$seasonYearString}.");
-                    $teamsNotFoundCount++;
-                    continue;
-                }
-                
                 TeamHistoricalStanding::updateOrCreate(
                     [
-                        'team_id' => $team->id,
-                        'season_year' => $seasonYearString,
-                        'league_name' => $responseJson['competition']['name'] ?? (isset($responseJson['filters']['competition']) ? $responseJson['filters']['competition'] : $competitionId),
+                        'team_id' => $teamInDb->id,
+                        'season_year' => $seasonYear,
+                        'league_name' => $apiStandingsData['competition']['name'] ?? $competitionCode, // Nome competizione dall'API se disponibile
                     ],
                     [
-                        'position' => $entry['position'],
-                        'played_games' => $entry['playedGames'],
-                        'won' => $entry['won'],
-                        'draw' => $entry['draw'],
-                        'lost' => $entry['lost'],
-                        'points' => $entry['points'],
-                        'goals_for' => $entry['goalsFor'],
-                        'goals_against' => $entry['goalsAgainst'],
-                        'goal_difference' => $entry['goalDifference'],
-                        'data_source' => 'api_football-data_v4',
+                        'position' => $apiTeamDataRow['position'],
+                        'played_games' => $apiTeamDataRow['playedGames'],
+                        'won' => $apiTeamDataRow['won'],
+                        'draw' => $apiTeamDataRow['draw'],
+                        'lost' => $apiTeamDataRow['lost'],
+                        'points' => $apiTeamDataRow['points'],
+                        'goals_for' => $apiTeamDataRow['goalsFor'],
+                        'goals_against' => $apiTeamDataRow['goalsAgainst'],
+                        'goal_difference' => $apiTeamDataRow['goalDifference'],
+                        'data_source' => 'football-data.org'
                     ]
                     );
-                $teamsProcessedCount++;
+                $savedCount++;
+            } catch (\Exception $e) {
+                Log::error("TeamDataService: Errore durante il salvataggio della classifica per team ID {$teamInDb->id} ({$teamInDb->name}), stagione {$seasonYear}. Errore: {$e->getMessage()}");
             }
-            Log::info(self::class . ": Classifiche per {$competitionId} stagione {$seasonYearString} elaborate. Salvate: {$teamsProcessedCount}. Non trovate nel DB locale: {$teamsNotFoundCount}.");
-            return true;
+        }
+        Log::info("TeamDataService: Classifiche per {$competitionCode} stagione {$seasonYear} elaborate. Salvate: {$savedCount}. Non trovate/dati API incompleti: {$notFoundInDb}.");
+        return ['saved' => $savedCount, 'notFound' => $notFoundInDb];
+    }
+    
+    /**
+     * Recupera e salva le classifiche per una data competizione e stagione.
+     * Nome metodo allineato alla chiamata dal comando.
+     */
+    public function fetchAndStoreSeasonStandings(int $seasonStartYear, string $competitionCode = 'SA'): array // Modificato per restituire array
+    {
+        $seasonDisplay = $seasonStartYear . '-' . substr($seasonStartYear + 1, 2);
+        Log::info("TeamDataService: Tentativo di recuperare classifica per stagione {$seasonStartYear} (Competizione: {$competitionCode}).");
+        
+        $standingsData = $this->apiService->getStandingsForCompetitionAndSeason($competitionCode, $seasonStartYear);
+        
+        $defaultResult = ['saved' => 0, 'notFound' => 0, 'success' => false, 'message' => 'Fallimento recupero dati API o dati non validi.'];
+        
+        if ($standingsData && isset($standingsData['standings']) && !empty($standingsData['standings'][0]['table'])) {
+            $result = $this->saveStandingsFromApiData($standingsData, $competitionCode, $seasonDisplay);
+            $result['success'] = $result['saved'] > 0; // Aggiunge un flag di successo basato sui record salvati
+            $result['message'] = $result['success'] ? "Elaborazione completata." : "Nessun record salvato durante l'elaborazione.";
+            return $result;
+        } elseif ($standingsData === null) {
+            $defaultResult['message'] = "Chiamata API fallita o risposta vuota per classifiche {$competitionCode} stagione {$seasonStartYear}. Nessun dato da salvare.";
+            Log::error("TeamDataService: " . $defaultResult['message']);
+        } else {
+            $defaultResult['message'] = "Nessuna classifica trovata o formato dati inatteso per {$competitionCode} stagione {$seasonStartYear}.";
+            Log::warning("TeamDataService: " . $defaultResult['message'], ['response' => $standingsData]);
+        }
+        // Se la tabella è vuota, potremmo voler stimare il numero di team attesi per $notFound
+        if (isset($standingsData['standings'][0]['table']) && empty($standingsData['standings'][0]['table']) && isset($standingsData['filters']['season'])) {
+            // Questo è un caso in cui l'API potrebbe restituire una struttura valida ma senza team (es. stagione futura non ancora iniziata)
+            // Non è necessariamente un errore, ma 0 salvati.
+            $defaultResult['message'] = "API ha restituito una tabella classifiche vuota per {$competitionCode} stagione {$seasonStartYear}.";
+            Log::info("TeamDataService: " . $defaultResult['message']);
+            $defaultResult['success'] = true; // Consideriamo successo perché l'API ha risposto, ma non c'erano dati
+        }
+        
+        
+        return $defaultResult;
     }
 }

@@ -1,0 +1,78 @@
+/* public/css/dashboard.css */
+
+body {
+    /* Puoi decidere se tenere lo stile del body qui o in app.blade.php */
+    /* font-family: sans-serif;  Potrebbe essere già in layouts/app.blade.php */
+    /* background-color: #f4f6f9; */ /* Esempio di sfondo per la pagina intera */
+}
+
+.dashboard-title {
+    margin-bottom: 1.5rem;
+    font-weight: 300;
+}
+
+.phase-card {
+    margin-bottom: 1.5rem;
+    /* Se usi Bootstrap, le classi .card gestiranno già molto dello stile base */
+}
+
+.phase-card .card-header { /* Stile per l'header della card Bootstrap */
+    font-weight: 500;
+}
+
+.phase-card .card-body p {
+    margin-bottom: 0.5rem;
+}
+
+.phase-card .card-body pre {
+    background-color: #e9ecef; /* Sfondo grigio chiaro per il blocco pre */
+    color: #212529; /* Colore testo scuro per il contenuto di pre, se necessario */
+    padding: 10px 15px;
+    border-radius: 4px;
+    border: 1px solid #ced4da; /* Bordo per il blocco pre */
+    overflow-x: auto;
+    font-size: 0.85em;
+    margin-top: 0.5rem;
+    margin-bottom: 0.5rem; /* Aggiunto per spaziatura tra più comandi */
+}
+
+.phase-card .card-body pre code {
+    font-family: Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace;
+    color: #000000; /* FORZA IL COLORE DEL TESTO A NERO per il tag code */
+    background-color: transparent; /* Assicura che non ci sia uno sfondo strano per <code> */
+    padding: 0; /* Resetta il padding se Bootstrap ne aggiunge */
+    font-size: inherit; /* Eredita la dimensione del font da <pre> */
+}
+
+.action-suggestion {
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px dashed #ccc;
+}
+
+.action-suggestion .btn { /* Stile per i bottoni Bootstrap dentro le azioni */
+    margin-right: 5px;
+    margin-bottom: 5px;
+}
+
+/* Stili per i badge di stato (funzionano con le classi Bootstrap .badge) */
+/* Ad esempio, se usi <span class="badge rounded-pill bg-success">Completato</span> */
+/* Potresti non aver bisogno di molto CSS custom per i badge se usi le classi utility di Bootstrap */
+
+/* Esempio di classi custom per i bordi delle card basate sullo stato, se le usi */
+.border-status-completed { border-left: 5px solid #28a745 !important; } /* Verde */
+.border-status-partial { border-left: 5px solid #ffc107 !important; } /* Giallo */
+.border-status-pending { border-left: 5px solid #6c757d !important; } /* Grigio */
+.border-status-error { border-left: 5px solid #dc3545 !important; } /* Rosso */
+.border-status-non-applicabile { border-left: 5px solid #e0e0e0 !important; } /* Grigio chiaro */
+
+
+/* Stili per le icone e i colori degli header (se non usi le classi utility di Bootstrap per gli sfondi header) */
+.header-completed { background-color: #d4edda !important; color: #155724 !important; }
+.header-partial { background-color: #fff3cd !important; color: #856404 !important; }
+.header-pending { background-color: #e2e3e5 !important; color: #383d41 !important; }
+.header-error { background-color: #f8d7da !important; color: #721c24 !important; }
+
+/* Aggiungi qui gli altri stili specifici che avevi per le classi come: */
+/* .status-completed, .status-partial, .status-pending, .status-error */
+/* per i badge o altri elementi se non ti affidi completamente alle classi utility di Bootstrap */
