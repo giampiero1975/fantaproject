@@ -23,11 +23,20 @@ class TeamHistoricalStanding extends Model
         'goals_against',
         'goal_difference',
         // 'avg_points_per_game',
-        'data_source',
+        'data_source',        
     ];
     
     protected $casts = [
-        // cast per i numerici se necessario
+        'season_year' => 'integer',
+        'position' => 'integer',
+        'played_games' => 'integer',
+        'won' => 'integer',
+        'draw' => 'integer',
+        'lost' => 'integer',
+        'points' => 'integer',
+        'goals_for' => 'integer',
+        'goals_against' => 'integer',
+        'goal_difference' => 'integer',
     ];
     
     public function team()

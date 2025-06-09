@@ -24,6 +24,8 @@ class Team extends Model
         'fanta_platform_id',      // ID usato dalla piattaforma Fantacalcio (es. IDGazzetta)
         'api_football_data_id',   // ID usato da football-data.org
         'league_code',            // Codice della lega attuale della squadra (es. SA, SB) da football-data.org
+        'season_year',
+        
     ];
     
     /**
@@ -36,6 +38,7 @@ class Team extends Model
         'tier' => 'integer',
         'fanta_platform_id' => 'integer',
         'api_football_data_id' => 'integer',
+        'season_year',
     ];
     
     /**

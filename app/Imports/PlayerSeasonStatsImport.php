@@ -4,126 +4,115 @@ namespace App\Imports;
 
 use App\Models\HistoricalPlayerStat;
 use App\Models\Player;
-use App\Models\Team;
+use App\Models\Team; // Assicurati che questo sia importato
 use Illuminate\Support\Collection;
 use Maatwebsite\Excel\Concerns\ToCollection;
-use Maatwebsite\Excel\Concerns\WithHeadingRow; // Facilita l'accesso per nome colonna
-use Maatwebsite\Excel\Concerns\WithCustomCsvSettings; // Per CSV con delimitatori diversi
+use Maatwebsite\Excel\Concerns\WithHeadingRow;
 use Illuminate\Support\Facades\Log;
-use Throwable;
 
-class PlayerSeasonStatsImport implements ToCollection, WithHeadingRow, WithCustomCsvSettings
+class PlayerSeasonStatsImport implements ToCollection, WithHeadingRow
 {
-    public int $processedCount = 0;
-    public int $createdCount = 0;
-    public int $updatedCount = 0;
-    private string $defaultLeagueForFile;
+    private $seasonStartYear;
+    private $leagueName; // Nuovo: per passare il nome della lega
     
-    // Passiamo un defaultLeague per i record di questo file se la colonna manca in qualche riga
-    public function __construct(string $defaultLeagueForFile = 'Serie A')
+    public function __construct(int $seasonStartYear, string $leagueName = 'Serie A') // Modificato: aggiunta leagueName
     {
-        $this->defaultLeagueForFile = $defaultLeagueForFile;
+        $this->seasonStartYear = $seasonStartYear;
+        $this->leagueName = $leagueName; // Inizializza il nome della lega
     }
-    
-    public function getCsvSettings(): array
-    {
-        return [
-            'delimiter' => ';' // Assumendo che il tuo CSV usi il punto e virgola
-            // Se usi XLSX, questo non è necessario. Maatwebsite/Excel gestisce XLSX.
-        ];
-    }
-    
-    // Se il tuo file CSV/XLSX ha una riga di intestazione, WithHeadingRow è utile.
-    // Assicurati che i nomi delle intestazioni nel file siano consistenti.
-    // Es. PlayerFantaPlatformID, NomeGiocatore, NomeSquadraDB, StagioneAnnoInizio, NomeLega,
-    //      PartiteGiocate, MinutiGiocati, Reti, Assist, MediaVoto (se disponibile), etc.
     
     public function collection(Collection $rows)
     {
-        Log::info("[PlayerSeasonStatsImport] Inizio importazione. Righe: " . $rows->count());
+        Log::info("Inizio importazione statistiche storiche per la stagione {$this->seasonStartYear}-" . ($this->seasonStartYear + 1) . " (Lega: {$this->leagueName})");
         
         foreach ($rows as $row) {
-            // Normalizza i nomi delle chiavi (intestazioni) per flessibilità
-            $normalizedRow = collect($row)->mapWithKeys(function ($value, $key) {
-                return [str_replace(' ', '', strtolower($key)) => $value];
-            })->all();
-            
-            
-            $playerFantaId = trim($normalizedRow['playerfantaplatformid'] ?? $normalizedRow['idfanta'] ?? null);
-            $playerName = trim($normalizedRow['nomegiocatore'] ?? $normalizedRow['nome'] ?? null);
-            $teamNameCsv = trim($normalizedRow['nomesquadradb'] ?? $normalizedRow['squadra'] ?? null);
-            $seasonStartYear = trim($normalizedRow['stagioneannoinizio'] ?? $normalizedRow['stagione'] ?? null);
-            // Leggi la lega dal file, con un fallback al default passato al costruttore
-            $leagueNameCsv = trim($normalizedRow['nomelega'] ?? $normalizedRow['lega'] ?? $this->defaultLeagueForFile);
-            if (empty($leagueNameCsv)) $leagueNameCsv = $this->defaultLeagueForFile;
-            
-            
-            if (empty($playerFantaId) || empty($seasonStartYear)) {
-                Log::warning("[PlayerSeasonStatsImport] Riga saltata: PlayerFantaPlatformID o StagioneAnnoInizio mancanti.", $row->toArray());
+            // Salta le righe con dati mancanti cruciali (es. nome giocatore o ID)
+            if (empty($row['id']) && empty($row['nome'])) { // 'id' si riferisce a fanta_platform_id nel CSV
+                Log::warning("Saltata riga a causa di ID o Nome Giocatore mancante: " . json_encode($row->toArray()));
                 continue;
             }
             
-            $player = Player::where('fanta_platform_id', $playerFantaId)->first();
-            if (!$player) {
-                Log::warning("[PlayerSeasonStatsImport] Giocatore con FantaPlatformID {$playerFantaId} non trovato nel DB. Riga saltata.", $row->toArray());
-                continue;
-            }
+            $fantaPlatformId = $row['id'] ?? null;
+            $playerName = $row['nome'] ?? null;
+            $teamName = $row['squadra'] ?? null; // Assicurati che il CSV abbia la colonna 'squadra'
             
-            $teamId = null;
-            if ($teamNameCsv) {
-                $team = Team::where('name', $teamNameCsv)
-                ->orWhere('short_name', $teamNameCsv)
-                ->first();
-                if ($team) {
-                    $teamId = $team->id;
-                } else {
-                    Log::warning("[PlayerSeasonStatsImport] Squadra '{$teamNameCsv}' non trovata per giocatore {$playerName}. team_id sarà NULL.");
+            if (!$fantaPlatformId && $playerName) {
+                // Tenta di trovare il giocatore per nome se ID non presente, ma è meno affidabile
+                $player = Player::where('name', $playerName)->first();
+                if ($player) {
+                    $fantaPlatformId = $player->fanta_platform_id;
                 }
             }
             
-            $seasonYearString = $seasonStartYear . '-' . substr((int)$seasonStartYear + 1, 2, 2);
-            
-            $dataToStore = [
-                'player_fanta_platform_id' => $player->fanta_platform_id,
-                'season_year'              => $seasonYearString,
-                'league_name'              => $leagueNameCsv, // Campo chiave
-                'team_id'                  => $teamId,
-                'team_name_for_season'     => $teamNameCsv,
-                // Assumi che il ruolo sia quello attuale del giocatore, o aggiungi colonna "RuoloStagione" al CSV
-                'role_for_season'          => $player->role,
-                'games_played'             => (int)($normalizedRow['partitegiocate'] ?? $normalizedRow['pg'] ?? 0),
-                'minutes_played'           => (int)($normalizedRow['minutigiocati'] ?? $normalizedRow['min'] ?? 0),
-                'goals_scored'             => (int)($normalizedRow['retisegnate'] ?? $normalizedRow['reti'] ?? $normalizedRow['gf'] ?? 0),
-                'assists'                  => (int)($normalizedRow['assistforniti'] ?? $normalizedRow['assist'] ?? $normalizedRow['ass'] ?? 0),
-                'avg_rating'               => isset($normalizedRow['mediavoto']) ? (float)str_replace(',', '.', $normalizedRow['mediavoto']) : null,
-                'penalties_taken'          => (int)($normalizedRow['rigoritentati'] ?? $normalizedRow['rigt'] ?? 0),
-                'penalties_scored'         => (int)($normalizedRow['rigorisegnati'] ?? $normalizedRow['rigori'] ?? $normalizedRow['r+'] ?? 0),
-                'yellow_cards'             => (int)($normalizedRow['ammonizioni'] ?? $normalizedRow['amm'] ?? 0),
-                'red_cards'                => (int)($normalizedRow['espulsioni'] ?? $normalizedRow['esp'] ?? 0),
-                // Aggiungi qui altre colonne che vuoi importare da FBRef, es. xg, xag
-                // 'xg_total'                 => isset($normalizedRow['xg']) ? (float)str_replace(',', '.', $normalizedRow['xg']) : null,
-                // 'xag_total'                => isset($normalizedRow['xag']) ? (float)str_replace(',', '.', $normalizedRow['xag']) : null,
-            ];
-            
-            if (isset($dataToStore['penalties_taken'], $dataToStore['penalties_scored'])) {
-                $dataToStore['penalties_missed'] = $dataToStore['penalties_taken'] - $dataToStore['penalties_scored'];
+            if (!$fantaPlatformId) {
+                Log::warning("Saltata riga: Impossibile identificare il giocatore. ID Piattaforma o Nome mancante/non trovato per: " . ($playerName ?? 'N/A') . " - " . ($teamName ?? 'N/A'));
+                continue;
             }
             
-            try {
-                HistoricalPlayerStat::updateOrCreate(
-                    [
-                        'player_fanta_platform_id' => $dataToStore['player_fanta_platform_id'],
-                        'season_year'              => $dataToStore['season_year'],
-                        'team_name_for_season'     => $dataToStore['team_name_for_season'], // O team_id
-                        'league_name'              => $dataToStore['league_name'], // Chiave per distinguere tra leghe
-                    ],
-                    $dataToStore
-                    );
-                $this->processedCount++;
-            } catch (Throwable $e) {
-                Log::error("[PlayerSeasonStatsImport] Errore DB per {$playerName} ({$playerFantaId}): " . $e->getMessage(), ['data' => $dataToStore, 'row' => $row->toArray()]);
+            // Trova il team_id basandosi sul nome della squadra
+            $team = Team::where('name', $teamName)->first();
+            $teamId = $team->id ?? null;
+            
+            if (!$teamId) {
+                Log::warning("Saltata riga per ID Piattaforma {$fantaPlatformId} ({$playerName}): Squadra '{$teamName}' non trovata nel database.");
+                continue;
             }
+            
+            // Prepara i dati da salvare in historical_player_stats
+            $seasonYearFormatted = $this->seasonStartYear . '-' . substr($this->seasonStartYear + 1, 2);
+            
+            // Per i valori che potrebbero essere stringhe con virgola come separatore decimale, usare str_replace
+            // Oppure assicurarsi che il CSV sia già con il punto come separatore decimale.
+            // Assumiamo che i voti siano già numeri, altrimenti servirà una funzione per pulirli.
+            $avgRating = floatval(str_replace(',', '.', $row['mv'] ?? 0.0));
+            $fantaAvgRating = floatval(str_replace(',', '.', $row['fm'] ?? 0.0));
+            
+            // Qui stiamo importando dati che sono già "storici" e presumibilmente aggregati.
+            // Per questi dati, goals_scored, assists ecc. sono i totali della stagione dal CSV.
+            $goalsScored = floatval(str_replace(',', '.', $row['gol_fatti'] ?? 0));
+            $assists = floatval(str_replace(',', '.', $row['assist'] ?? 0));
+            $yellowCards = floatval(str_replace(',', '.', $row['ammonizioni'] ?? 0));
+            $redCards = floatval(str_replace(',', '.', $row['espulsioni'] ?? 0));
+            $ownGoals = floatval(str_replace(',', '.', $row['autogol'] ?? 0));
+            $penaltiesTaken = floatval(str_replace(',', '.', $row['rigori_calciati'] ?? 0)); // Assicurati colonna CSV
+            $penaltiesScored = floatval(str_replace(',', '.', $row['rigori_segnati'] ?? 0)); // Assicurati colonna CSV
+            $penaltiesMissed = $penaltiesTaken - $penaltiesScored; // Calcola se non è nel CSV
+            $penaltiesSaved = floatval(str_replace(',', '.', $row['rigori_parati'] ?? 0)); // Assicurati colonna CSV
+            $goalsConceded = floatval(str_replace(',', '.', $row['gol_subiti'] ?? 0)); // Assicurati colonna CSV
+            
+            // Per il ruolo, usiamo quello dal CSV se esiste, altrimenti dal modello Player
+            $roleForSeason = $row['ruolo'] ?? $player->role ?? null;
+            // Mantra role non è tipicamente nel CSV storico, lo lasciamo a null
+            $mantraRoleForSeason = null;
+            
+            HistoricalPlayerStat::updateOrCreate(
+                [
+                    'player_fanta_platform_id' => $fantaPlatformId,
+                    'season_year' => $seasonYearFormatted,
+                    'team_id' => $teamId,
+                    'league_name' => $this->leagueName, // <-- Popolato con "Serie A" o la lega specificata
+                ],
+                [
+                    'team_name_for_season' => $teamName,
+                    'role_for_season' => $roleForSeason,
+                    'mantra_role_for_season' => $mantraRoleForSeason,
+                    'games_played' => $row['presenze'] ?? 0,
+                    'avg_rating' => $avgRating,
+                    'fanta_avg_rating' => $fantaAvgRating,
+                    'goals_scored' => $goalsScored,
+                    'goals_conceded' => $goalsConceded,
+                    'penalties_saved' => $penaltiesSaved,
+                    'penalties_taken' => $penaltiesTaken,
+                    'penalties_scored' => $penaltiesScored,
+                    'penalties_missed' => $penaltiesMissed,
+                    'assists' => $assists,
+                    'yellow_cards' => $yellowCards,
+                    'red_cards' => $redCards,
+                    'own_goals' => $ownGoals,
+                    // 'assists_from_set_piece' => $row['assist_da_fermo'] ?? null, // Se il CSV ha questa colonna
+                ]
+                );
+            Log::info("Importata/Aggiornata statistica storica per {$playerName} (ID: {$fantaPlatformId}) per la stagione {$seasonYearFormatted}.");
         }
     }
-    public function getProcessedCount(): int { return $this->processedCount; }
 }

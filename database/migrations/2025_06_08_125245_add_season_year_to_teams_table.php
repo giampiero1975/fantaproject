@@ -11,23 +11,23 @@ return new class extends Migration
      *
      * @return void
      */
-    public function up()
+    public function up(): void
     {
         Schema::table('teams', function (Blueprint $table) {
-            $table->integer('api_football_data_team_id')->nullable()->unique()->after('tier');
+            // Aggiungi la colonna season_year
+            $table->integer('season_year')->nullable()->after('league_code')->comment('Anno della stagione di riferimento per i dati della squadra (es. da API)');
         });
-            // ... e la relativa dropColumn in down()
     }
-
+    
     /**
      * Reverse the migrations.
      *
      * @return void
      */
-    public function down()
+    public function down(): void
     {
         Schema::table('teams', function (Blueprint $table) {
-            $table->dropColumn(['api_football_data_team_id']);
+            $table->dropColumn('season_year');
         });
     }
 };

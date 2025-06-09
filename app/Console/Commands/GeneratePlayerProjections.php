@@ -5,8 +5,9 @@ namespace App\Console\Commands;
 use Illuminate\Console\Command;
 use App\Models\Player;
 use App\Models\UserLeagueProfile;
-use App\Services\ProjectionEngineService;
 use App\Models\ImportLog;
+use App\Models\PlayerProjectionSeason; // <-- Importa il nuovo modello
+use App\Services\ProjectionEngineService;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
@@ -18,16 +19,17 @@ class GeneratePlayerProjections extends Command
      * @var string
      */
     protected $signature = 'players:generate-projections
+                            {--target_season_year= : Anno di inizio della stagione di proiezione (es. 2025 per 2025-26)}
                             {--player_id= : ID specifico di un giocatore (dal DB) da processare}
                             {--role= : Ruolo specifico da processare (P, D, C, A)}
-                            {--force : Forza la rigenerazione delle proiezioni anche se esistenti}';
+                            {--force : Forza la rigenerazione delle proiezioni anche se esistenti per la stagione target}';
     
     /**
      * The console command description.
      *
      * @var string
      */
-    protected $description = 'Genera le proiezioni finali per i giocatori e le salva nella tabella `players`.';
+    protected $description = 'Genera le proiezioni finali per i giocatori e le salva nella tabella `player_projections_season`.';
     
     protected ProjectionEngineService $projectionEngine;
     protected ?UserLeagueProfile $leagueProfile;
@@ -42,8 +44,6 @@ class GeneratePlayerProjections extends Command
     {
         parent::__construct();
         $this->projectionEngine = $projectionEngine;
-        // Carica il profilo lega di default qui.
-        // È cruciale che questo carichi un'istanza di modello e non solo dati raw.
         $this->leagueProfile = UserLeagueProfile::first();
     }
     
@@ -54,10 +54,7 @@ class GeneratePlayerProjections extends Command
      */
     public function handle()
     {
-        // Ricontrolla il profilo lega qui per sicurezza,
-        // ma dovrebbe già essere stato caricato nel costruttore.
-        // Se si preferisce, si può anche ricaricarlo:
-        // $this->leagueProfile = UserLeagueProfile::first();
+        $this->leagueProfile = UserLeagueProfile::first();
         
         if (!$this->leagueProfile) {
             $this->error("Profilo Lega non trovato. Crea un profilo lega prima di generare le proiezioni.");
@@ -65,15 +62,21 @@ class GeneratePlayerProjections extends Command
             return Command::FAILURE;
         }
         
+        $targetSeasonYear = (int)$this->option('target_season_year');
+        if (empty($targetSeasonYear)) {
+            $this->error("L'anno della stagione di proiezione (--target_season_year) è obbligatorio.");
+            return Command::FAILURE;
+        }
+        
         $forceRegeneration = $this->option('force');
         
-        $this->info("Avvio Generazione Proiezioni Finali usando il profilo lega: '{$this->leagueProfile->name}'");
+        $this->info("Avvio Generazione Proiezioni Finali per la stagione {$targetSeasonYear}-" . ($targetSeasonYear + 1) . " usando il profilo lega: '{$this->leagueProfile->name}'");
         if ($forceRegeneration) {
-            $this->warn("Modalità FORCED: Tutte le proiezioni esistenti verranno sovrascritte.");
+            $this->warn("Modalità FORCED: Tutte le proiezioni esistenti per la stagione {$targetSeasonYear}-" . ($targetSeasonYear + 1) . " verranno sovrascritte.");
         } else {
-            $this->info("Modalità standard: Le proiezioni esistenti e valide non verranno sovrascritte.");
+            $this->info("Modalità standard: Le proiezioni esistenti e valide per la stagione {$targetSeasonYear}-" . ($targetSeasonYear + 1) . " non verranno sovrascritte.");
         }
-        Log::info(self::class . ": Avvio generazione proiezioni (Force: " . ($forceRegeneration ? 'true' : 'false') . ").");
+        Log::info(self::class . ": Avvio generazione proiezioni (Target Season: {$targetSeasonYear}, Force: " . ($forceRegeneration ? 'true' : 'false') . ").");
         
         $startTime = microtime(true);
         $processedCount = 0;
@@ -107,15 +110,16 @@ class GeneratePlayerProjections extends Command
         foreach ($players as $player) {
             $bar->advance();
             
-            if (!$forceRegeneration &&
-                $player->avg_rating_proj !== null &&
-                $player->fanta_mv_proj !== null &&
-                $player->games_played_proj !== null &&
-                $player->total_fanta_points_proj !== null)
+            // Verifica se esiste già una proiezione per la stagione target
+            $existingProjection = PlayerProjectionSeason::where('player_fanta_platform_id', $player->fanta_platform_id)
+            ->where('season_start_year', $targetSeasonYear)
+            ->first();
+            
+            if (!$forceRegeneration && $existingProjection)
             {
                 $this->getOutput()->newLine();
-                $this->info("Saltato {$player->name} (ID: {$player->id}): Proiezioni già presenti e --force non specificato.");
-                Log::info(self::class . ": Saltato player ID {$player->id} - Proiezioni esistenti.");
+                $this->info("Saltato {$player->name} (ID: {$player->id}): Proiezione già presente per la stagione {$targetSeasonYear}-" . ($targetSeasonYear + 1) . " e --force non specificato.");
+                Log::info(self::class . ": Saltato player ID {$player->id} - Proiezione esistente per stagione {$targetSeasonYear}.");
                 $skippedCount++;
                 continue;
             }
@@ -131,18 +135,38 @@ class GeneratePlayerProjections extends Command
                     continue;
                 }
                 
-                // Aggiorna solo i campi di proiezione specifici
-                $player->update([
-                    'avg_rating_proj'       => $projections['mv_proj_per_game'] ?? null, // Aggiunto ?? null
-                    'fanta_mv_proj'         => $projections['fanta_media_proj_per_game'] ?? null, // Aggiunto ?? null
-                    'games_played_proj'     => $projections['presenze_proj'] ?? null, // Aggiunto ?? null
-                    'total_fanta_points_proj' => $projections['total_fantasy_points_proj'] ?? null, // Aggiunto ?? null
-                ]);
+                // Prepara i dati per la nuova tabella player_projections_season
+                $projectionData = [
+                    'player_fanta_platform_id' => $player->fanta_platform_id,
+                    'season_start_year'      => $targetSeasonYear,
+                    'avg_rating_proj'        => $projections['mv_proj_per_game'] ?? null,
+                    'fanta_mv_proj'          => $projections['fanta_media_proj_per_game'] ?? null,
+                    'games_played_proj'      => $projections['presenze_proj'] ?? null,
+                    'total_fanta_points_proj' => $projections['total_fantasy_points_proj'] ?? null,
+                    // Aggiungi tutti gli altri campi di proiezione dettagliati qui
+                    'goals_scored_proj'      => $projections['seasonal_totals_proj']['goals_scored_proj'] ?? null,
+                    'assists_proj'           => $projections['seasonal_totals_proj']['assists_proj'] ?? null,
+                    'yellow_cards_proj'      => $projections['seasonal_totals_proj']['yellow_cards_proj'] ?? null,
+                    'red_cards_proj'         => $projections['seasonal_totals_proj']['red_cards_proj'] ?? null,
+                    'own_goals_proj'         => $projections['seasonal_totals_proj']['own_goals_proj'] ?? null,
+                    'penalties_taken_proj'   => $projections['seasonal_totals_proj']['penalties_taken_proj'] ?? null,
+                    'penalties_scored_proj'  => $projections['seasonal_totals_proj']['penalties_scored_proj'] ?? null,
+                    'penalties_missed_proj'  => $projections['seasonal_totals_proj']['penalties_missed_proj'] ?? null,
+                    'goals_conceded_proj'    => $projections['seasonal_totals_proj']['goals_conceded_proj'] ?? null,
+                    'penalties_saved_proj'   => $projections['seasonal_totals_proj']['penalties_saved_proj'] ?? null,
+                ];
+                
+                // Salva o aggiorna nella nuova tabella delle proiezioni
+                PlayerProjectionSeason::updateOrCreate(
+                    ['player_fanta_platform_id' => $player->fanta_platform_id, 'season_start_year' => $targetSeasonYear],
+                    $projectionData
+                    );
+                
                 $processedCount++;
                 
             } catch (\Exception $e) {
                 $this->getOutput()->newLine();
-                $this->error("Errore durante la generazione della proiezione per {$player->name} (ID: {$player->id}): " . $e->getMessage());
+                $this->error("Errore durante la generazione e il salvataggio della proiezione per {$player->name} (ID: {$player->id}): " . $e->getMessage());
                 Log::error(self::class . ": Eccezione per player ID {$player->id}. Msg: {$e->getMessage()}", [
                     'trace' => Str::limit($e->getTraceAsString(), 1000)
                 ]);
@@ -162,7 +186,7 @@ class GeneratePlayerProjections extends Command
         Log::info(self::class . ": " . $summary);
         
         ImportLog::create([
-            'original_file_name' => 'Generazione Proiezioni Finali',
+            'original_file_name' => 'Generazione Proiezioni Finali per Stagione ' . $targetSeasonYear,
             'import_type' => 'generate_projections',
             'status' => $failedCount > 0 ? ($processedCount > 0 || $skippedCount > 0 ? 'parziale' : 'fallito') : 'successo',
             'details' => $summary,

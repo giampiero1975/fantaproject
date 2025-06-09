@@ -31,6 +31,7 @@
         <a href="{{ route('roster.show') }}">Carica Roster</a>
         <a href="{{ route('historical_stats.show_upload_form') }}">Carica Statistiche</a>
         <a href="{{ route('league.profile.edit') }}">Profilo Lega</a>
+        <a href="{{ route('projections.index') }}">Proiezioni</a>
     </nav>
 
     <div class="container">

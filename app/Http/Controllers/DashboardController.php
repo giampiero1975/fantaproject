@@ -8,17 +8,26 @@ use App\Models\ImportLog;
 use App\Models\Player;
 use App\Models\PlayerFbrefStat;
 use App\Models\HistoricalPlayerStat;
+use App\Models\PlayerProjectionSeason;
+use App\Services\PlayerStatsApiService;
 use Illuminate\Support\Carbon;
 use Illuminate\View\View;
 use Illuminate\Support\Str;
 
 class DashboardController extends Controller
 {
+    protected PlayerStatsApiService $playerStatsApiService;
+    
+    public function __construct(PlayerStatsApiService $playerStatsApiService)
+    {
+        $this->playerStatsApiService = $playerStatsApiService;
+    }
+    
     public function index(): View
     {
         $data = [
             'standingsStatus'         => $this->getStandingsStatus(),
-            'activeTeamsStatus'       => $this->getActiveTeamsStatus(),
+            'activeTeamsStatus'       => $this->getActiveTeamsStatus(), // Questo ora riflette lo stato di teams:set-active-league
             'tiersStatus'             => $this->getTiersStatus(),
             'rosterStatus'            => $this->getRosterStatus(),
             'enrichmentStatus'        => $this->getEnrichmentStatus(),
@@ -34,21 +43,21 @@ class DashboardController extends Controller
     {
         $statusKey = strtolower(str_replace(' ', '-', $statusString));
         $attributes = [
-            'cardBorderClass' => 'border-secondary', // Default Bootstrap border
-            'headerBgClass'   => 'bg-light',        // Default Bootstrap card header
+            'cardBorderClass' => 'border-secondary',
+            'headerBgClass'   => 'bg-light',
             'iconClass'       => 'fas fa-question-circle text-secondary',
             'badgeClass'      => 'bg-secondary',
-            'showAction'      => true, // Di default mostra l'azione
+            'showAction'      => true,
         ];
-        
         switch ($statusKey) {
             case 'completato':
             case 'aggiornato':
             case 'calcolato':
             case 'importato':
-            case 'generate': // Per proiezioni
-            case 'processato': // Per fbref processing (se tutto ok)
+            case 'generate':
+            case 'processato':
             case 'processato-completamente':
+            case 'dati-presenti':
                 $attributes['cardBorderClass'] = 'border-success';
                 $attributes['headerBgClass']   = 'bg-success-subtle text-success-emphasis';
                 $attributes['iconClass']       = 'fas fa-check-circle text-success';
@@ -61,6 +70,7 @@ class DashboardController extends Controller
             case 'parzialmente-generate':
             case 'parzialmente-importato':
             case 'parzialmente-processato':
+            case 'parzialmente-aggiornato':
                 $attributes['cardBorderClass'] = 'border-warning';
                 $attributes['headerBgClass']   = 'bg-warning-subtle text-warning-emphasis';
                 $attributes['iconClass']       = 'fas fa-exclamation-triangle text-warning';
@@ -82,7 +92,7 @@ class DashboardController extends Controller
             case 'errore-ultimo-calcolo':
             case 'import-fallito':
             case 'processamento-fallito':
-            case 'scraping-fallito': // Aggiunto per fbref scraping
+            case 'scraping-fallito':
                 $attributes['cardBorderClass'] = 'border-danger';
                 $attributes['headerBgClass']   = 'bg-danger-subtle text-danger-emphasis';
                 $attributes['iconClass']       = 'fas fa-bomb text-danger';
@@ -93,7 +103,13 @@ class DashboardController extends Controller
                 $attributes['headerBgClass']   = 'bg-light text-muted';
                 $attributes['iconClass']       = 'fas fa-minus-circle text-muted';
                 $attributes['badgeClass']      = 'bg-light text-dark';
-                $attributes['showAction']      = false;
+                $attributes['showAction'] = false;
+                break;
+            case 'aggiornamento-disponibile':
+                $attributes['cardBorderClass'] = 'border-info';
+                $attributes['headerBgClass']   = 'bg-info-subtle text-info-emphasis';
+                $attributes['iconClass']       = 'fas fa-sync-alt text-info';
+                $attributes['badgeClass']      = 'bg-info';
                 break;
         }
         return $attributes;
@@ -104,7 +120,7 @@ class DashboardController extends Controller
         $count = TeamHistoricalStanding::count();
         $latestSeasonInDb = TeamHistoricalStanding::max('season_year');
         $lastImport = ImportLog::whereIn('import_type', ['standings_csv_import', 'standings_api_fetch'])
-        ->latest('created_at') // Prende l'ultimo tentativo, anche fallito
+        ->latest('created_at')
         ->first();
         
         $details = "Trovati {$count} record. ";
@@ -125,43 +141,102 @@ class DashboardController extends Controller
             $statusString = 'Import Fallito';
         }
         
+        $currentYear = date('Y');
+        $targetSeasonForAction = $currentYear;
+        if (Carbon::now()->month >= 7) {
+            $targetSeasonForAction = $currentYear + 1;
+        }
         
         $visualAttributes = $this->getVisualAttributesForStatus($statusString);
         return array_merge([
             'status_title' => $statusString,
             'details' => $details,
             'count' => $count,
-            'last_import_date' => $lastImportDate
+            'last_import_date' => $lastImportDate,
+            'target_season_year' => $targetSeasonForAction, // <-- Questa riga è già presente
         ], $visualAttributes);
     }
     
     private function getActiveTeamsStatus(): array
     {
-        $activeSACount = Team::where('serie_a_team', true)->count();
-        $lastRun = ImportLog::where('import_type', 'set_active_teams_serie_a')
+        $leagueCode = 'SA';
+        $currentYear = date('Y');
+        
+        $apiProvidedSeasonYear = null;
+        $apiProvidedSeasonDisplay = 'N/A';
+        
+        foreach ([$currentYear, $currentYear - 1] as $yearToTry) {
+            $apiTeamsData = $this->playerStatsApiService->getTeamsForCompetitionAndSeason($leagueCode, $yearToTry);
+            if ($apiTeamsData && isset($apiTeamsData['season']['startDate']) && isset($apiTeamsData['teams']) && !empty($apiTeamsData['teams'])) {
+                $apiProvidedSeasonYear = (int) Carbon::parse($apiTeamsData['season']['startDate'])->format('Y');
+                $apiProvidedSeasonDisplay = $apiProvidedSeasonYear . '-' . substr($apiProvidedSeasonYear + 1, 2);
+                break;
+            }
+        }
+        
+        $dbLatestMappedSeasonYear = Team::whereNotNull('api_football_data_id')->max('season_year');
+        $dbMappedTeamsCount = 0;
+        $dbLatestMappedSeasonDisplay = 'N/A';
+        if ($dbLatestMappedSeasonYear) {
+            $dbMappedTeamsCount = Team::whereNotNull('api_football_data_id')
+            ->where('season_year', $dbLatestMappedSeasonYear)
+            ->count();
+            $dbLatestMappedSeasonDisplay = $dbLatestMappedSeasonYear . '-' . substr($dbLatestMappedSeasonYear + 1, 2);
+        }
+        
+        $lastRun = ImportLog::where('import_type', 'set_active_teams_sa')
         ->latest('created_at')
         ->first();
+        
         $details = '';
         $statusString = 'Non aggiornato';
         $lastRunDate = 'N/A';
+        $actionSeasonYear = null;
         
-        if ($activeSACount === 20) {
-            $statusString = 'Aggiornato';
-            $details = '20 squadre Serie A attive definite.';
+        if (!$dbLatestMappedSeasonYear && !$apiProvidedSeasonYear) {
+            $statusString = 'Non applicabile';
+            $details = 'Nessun team mappato nel DB e nessuna stagione API disponibile.';
+        } elseif (!$dbLatestMappedSeasonYear && $apiProvidedSeasonYear) {
+            $statusString = 'Non popolato';
+            $actionSeasonYear = $apiProvidedSeasonYear;
+            $details = "Stagione API {$apiProvidedSeasonDisplay} disponibile per l'importazione. Clicca per Popolare.";
+        } elseif ($dbLatestMappedSeasonYear < $apiProvidedSeasonYear) {
+            $statusString = 'Aggiornamento Disponibile';
+            $actionSeasonYear = $apiProvidedSeasonYear;
+            $details = "Nuova stagione API ({$apiProvidedSeasonDisplay}) disponibile. Attualmente in DB: {$dbLatestMappedSeasonDisplay}. Clicca per Aggiornare.";
+        } elseif ($dbLatestMappedSeasonYear === $apiProvidedSeasonYear) {
+            if ($dbMappedTeamsCount >= 20) {
+                $statusString = 'Completato';
+                $actionSeasonYear = $apiProvidedSeasonYear;
+                $details = "Team API mappati per la stagione {$apiProvidedSeasonDisplay}.";
+            } else {
+                $statusString = 'Parzialmente aggiornato';
+                $actionSeasonYear = $apiProvidedSeasonYear;
+                $details = "Trovati {$dbMappedTeamsCount}/20 team con ID API per la stagione {$apiProvidedSeasonDisplay}. Clicca per Completare.";
+            }
         } else {
-            $details = "Trovate {$activeSACount}/20 squadre Serie A attive.";
+            $statusString = 'Completato';
+            $actionSeasonYear = $dbLatestMappedSeasonYear;
+            $details = "Team API mappati per la stagione {$dbLatestMappedSeasonDisplay}. (Potrebbe non essere la stagione più recente API).";
         }
         
         if ($lastRun) {
             $lastRunDate = Carbon::parse($lastRun->created_at)->format('d/m/Y H:i');
             $statusLastRun = $lastRun->status === 'successo' ? 'successo' : 'fallito';
             $details .= " Ultimo avvio: {$lastRunDate} (Stato: {$statusLastRun}).";
-            if ($lastRun->status !== 'successo' && $statusString !== 'Aggiornato') {
-                $statusString = 'Errore Ultimo Aggiornamento';
+            if ($lastRun->status !== 'successo' && $statusString !== 'Completato' && $statusString !== 'Aggiornamento Disponibile' && $statusString !== 'Non popolato' && $statusString !== 'Parzialmente aggiornato') {
+                $statusString = 'Import Fallito';
             }
         }
         
         $visualAttributes = $this->getVisualAttributesForStatus($statusString);
+        if ($actionSeasonYear && $statusString !== 'Completato' && $statusString !== 'Non applicabile' && $statusString !== 'Import Fallito') {
+            $visualAttributes['showAction'] = true;
+            $visualAttributes['target_season_year'] = $actionSeasonYear; // <-- Questa riga è già presente
+        } else {
+            $visualAttributes['showAction'] = false;
+        }
+        
         return array_merge([
             'status_title' => $statusString,
             'details' => $details,
@@ -202,11 +277,19 @@ class DashboardController extends Controller
                 $statusString = 'Errore Ultimo Calcolo';
             }
         }
+        
+        $currentYear = date('Y');
+        $targetSeasonForAction = $currentYear;
+        if (Carbon::now()->month >= 7) {
+            $targetSeasonForAction = $currentYear + 1;
+        }
+        
         $visualAttributes = $this->getVisualAttributesForStatus($statusString);
         return array_merge([
             'status_title' => $statusString,
             'details' => $details,
-            'last_run_date' => $lastRunDate
+            'last_run_date' => $lastRunDate,
+            'target_season_year' => $targetSeasonForAction, // <-- Questa riga è già presente
         ], $visualAttributes);
     }
     
@@ -219,7 +302,7 @@ class DashboardController extends Controller
         $lastImportDate = 'N/A';
         
         if ($playerCount > 0) {
-            $statusString = 'Importato'; // Base status if players exist
+            $statusString = 'Importato';
             $details = "Trovati {$playerCount} giocatori. ";
         }
         
@@ -227,7 +310,6 @@ class DashboardController extends Controller
             $lastImportDate = Carbon::parse($lastImport->created_at)->format('d/m/Y H:i');
             $details .= "Ultimo import: " . Str::limit($lastImport->original_file_name, 30) . " del {$lastImportDate}. ";
             if ($lastImport->status === 'successo') {
-                // StatusString rimane 'Importato' se playerCount > 0, altrimenti diventa 'Importato'
                 $statusString = 'Importato';
                 $details .= "Completato con successo (righe job: {$lastImport->rows_processed}).";
             } else {
@@ -240,7 +322,8 @@ class DashboardController extends Controller
             'status_title' => $statusString,
             'details' => $details,
             'last_import_date' => $lastImportDate,
-            'player_count' => $playerCount
+            'player_count' => $playerCount,
+            'target_season_year' => date('Y'), // Assumendo l'anno corrente per il roster // <-- Aggiunto!
         ], $visualAttributes);
     }
     
@@ -275,27 +358,25 @@ class DashboardController extends Controller
             $statusLastRun = $lastRun->status === 'successo' ? 'successo' : 'fallito';
             $details .= " Ultimo tentativo: {$lastRunDate} (Stato: {$statusLastRun}).";
             if ($lastRun->status !== 'successo' && $statusString === 'Da completare') {
-                // Potremmo voler mantenere "Da completare" ma segnalare l'errore
             }
         }
         $visualAttributes = $this->getVisualAttributesForStatus($statusString);
         if ($statusString === 'Da completare' && $lastRun && $lastRun->status !== 'successo') {
-            $visualAttributes['cardBorderClass'] = 'border-danger'; // Sovrascrive se l'ultimo run è fallito
+            $visualAttributes['cardBorderClass'] = 'border-danger';
             $visualAttributes['headerBgClass'] = 'bg-danger-subtle text-danger-emphasis';
             $visualAttributes['iconClass'] = 'fas fa-user-times text-danger';
             $visualAttributes['badgeClass'] = 'bg-danger';
         }
         
-        // Logica specifica per showAction per enrichment
         $visualAttributes['showAction'] = ($totalPlayers > 0 && $missingEnrichment > 0);
         if ($statusString === 'Non applicabile') $visualAttributes['showAction'] = false;
-        
         
         return array_merge([
             'status_title' => $statusString,
             'missing_count' => $missingEnrichment,
             'details' => $details,
-            'last_run_date' => $lastRunDate
+            'last_run_date' => $lastRunDate,
+            'target_season_year' => date('Y'), // Assumendo l'anno corrente // <-- Aggiunto!
         ], $visualAttributes);
     }
     
@@ -327,7 +408,8 @@ class DashboardController extends Controller
             'status_title' => $statusString,
             'scraped_count' => $scrapedRecordsCount,
             'details' => $details,
-            'last_scrape_date' => $lastScrapeDate
+            'last_scrape_date' => $lastScrapeDate,
+            'target_season_year' => date('Y'), // Assumendo l'anno corrente // <-- Aggiunto!
         ], $visualAttributes);
     }
     
@@ -358,23 +440,24 @@ class DashboardController extends Controller
         $visualAttributes = $this->getVisualAttributesForStatus($statusString);
         // Se non ci sono dati FBRef da processare, l'azione non è necessaria
         if (PlayerFbrefStat::count() === 0) {
-            $statusString = 'Non applicabile'; // O 'Non necessario'
+            $statusString = 'Non applicabile';
             $details = 'Nessun dato FBRef grezzo da processare.';
             $visualAttributes = $this->getVisualAttributesForStatus($statusString);
         }
         
         return array_merge([
             'status_title' => $statusString,
+            'processed_count' => $processedCountFromLog,
             'details' => $details,
-            'processed_count' => $processedCountFromLog, // Questo è il conteggio del job, non dalla tabella historical_stats
-            'last_run_date' => $lastRunDate
+            'last_run_date' => $lastRunDate,
+            'target_season_year' => date('Y'), // Assumendo l'anno corrente // <-- Aggiunto!
         ], $visualAttributes);
     }
     
     private function getOtherHistoricalStatsStatus(): array
     {
         $lastImport = ImportLog::where('import_type', 'statistiche_storiche')->latest()->first();
-        $historicalPlayerStatCount = HistoricalPlayerStat::count(); // Conteggio totale
+        $historicalPlayerStatCount = HistoricalPlayerStat::count();
         $statusString = 'Non importato';
         $details = 'Nessuna statistica storica (da upload XLSX) importata.';
         $lastImportDate = 'N/A';
@@ -398,30 +481,43 @@ class DashboardController extends Controller
             'status_title' => $statusString,
             'details' => $details,
             'last_import_date' => $lastImportDate,
-            'historical_count' => $historicalPlayerStatCount
+            'historical_count' => $historicalPlayerStatCount,
+            'target_season_year' => date('Y') - 1, // Assumendo l'anno precedente per storico // <-- Aggiunto!
         ], $visualAttributes);
     }
     
     private function getProjectionsStatus(): array
     {
+        // Ottieni l'anno della stagione d'asta attuale/futura.
+        $currentDate = Carbon::now();
+        $auctionSeasonStartYear = $currentDate->year;
+        if ($currentDate->month >= 7) {
+            $auctionSeasonStartYear = $currentDate->year + 1;
+        }
+        
+        $auctionSeasonDisplay = $auctionSeasonStartYear . '-' . substr($auctionSeasonStartYear + 1, 2);
+        
+        $playersWithProjections = PlayerProjectionSeason::where('season_start_year', $auctionSeasonStartYear)->count();
+        
         $totalPlayers = Player::count();
-        $playersWithProjections = Player::whereNotNull('fanta_mv_proj')->count();
         $lastRun = ImportLog::where('import_type', 'generate_projections')
         ->latest('created_at')
         ->first();
         $statusString = 'Non generate';
-        $details = 'Nessuna proiezione finale generata.';
+        $details = 'Nessuna proiezione finale generata per la stagione ' . $auctionSeasonDisplay . '.';
         $lastRunDate = 'N/A';
         
         if ($totalPlayers === 0 && $playersWithProjections === 0) {
             $statusString = 'Non applicabile';
             $details = 'Nessun giocatore nel DB per generare proiezioni.';
-        } elseif ($totalPlayers > 0 && $playersWithProjections === $totalPlayers) {
-            $statusString = 'Generate';
-            $details = 'Proiezioni generate per tutti i giocatori.';
         } elseif ($playersWithProjections > 0) {
-            $statusString = 'Parzialmente generate';
-            $details = "Proiezioni generate per {$playersWithProjections}/{$totalPlayers} giocatori.";
+            if ($playersWithProjections === $totalPlayers) {
+                $statusString = 'Generate';
+                $details = "Proiezioni generate per tutti i {$totalPlayers} giocatori per la stagione {$auctionSeasonDisplay}.";
+            } else {
+                $statusString = 'Parzialmente generate';
+                $details = "Proiezioni generate per {$playersWithProjections}/{$totalPlayers} giocatori per la stagione {$auctionSeasonDisplay}.";
+            }
         }
         
         if ($lastRun) {
@@ -434,14 +530,14 @@ class DashboardController extends Controller
         }
         
         $visualAttributes = $this->getVisualAttributesForStatus($statusString);
-        // Impedisci azione se non ci sono giocatori o se le statistiche storiche (passo 8) non sono popolate
         if ($totalPlayers === 0 || HistoricalPlayerStat::count() === 0) {
             $visualAttributes['showAction'] = false;
             if ($totalPlayers === 0) { $statusString = 'Non applicabile'; $details = 'Nessun giocatore nel DB.';}
             elseif (HistoricalPlayerStat::count() === 0) { $statusString = 'Non applicabile'; $details = 'Statistiche storiche non popolate. Impossibile generare proiezioni.';}
-            $visualAttributes = $this->getVisualAttributesForStatus($statusString); // Ricalcola attributi per 'Non applicabile'
+            $visualAttributes = $this->getVisualAttributesForStatus($statusString);
         }
         
+        $visualAttributes['target_season_year'] = $auctionSeasonStartYear; // <-- Questa riga è già presente
         
         return array_merge([
             'status_title' => $statusString,
