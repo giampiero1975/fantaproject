@@ -75,35 +75,43 @@
                     'artisan_commands' => ["php artisan teams:update-tiers " . $currentSeasonDisplay],
                     'artisan_tooltip' => "<strong>teams:update-tiers:</strong> Ricalcola i tier per la stagione specificata.<br>Args: <code>targetSeasonYear</code> (es. " . $currentSeasonDisplay .")."
                 ],
-                6 => [ // EX FASE 5
+                6 => [ // NUOVA FASE 6
+            		'data' => $playersSyncStatus, // Variabile passata dal controller
+            		'title_prefix' => '6.',
+            		'title' => 'Sincronizzazione Rose Serie A da API',
+            		'action_text' => 'Sincronizza le rose delle squadre di Serie A attive, aggiungendo nuovi giocatori e aggiornando quelli esistenti dall\'API.',
+            		'artisan_commands' => ["php artisan players:sync-from-active-teams"],
+            		'artisan_tooltip' => "<strong>players:sync-from-active-teams:</strong> Scarica le rose delle squadre con 'serie_a_team = true' e usa updateOrCreate sui giocatori basandosi sul loro api_football_data_id."
+        			],
+                7 => [ // EX FASE 5
                     'data' => $enrichmentStatus,
-                    'title_prefix' => '6.',
+                    'title_prefix' => '7.',
                     'title' => 'Dettagli Giocatori da API',
                     'action_text' => 'Recupera dati anagrafici (data di nascita, posizione dettagliata) e ID API per i giocatori presenti nel roster.',
                     'artisan_commands' => ["php artisan players:enrich-data"],
                     'artisan_tooltip' => "<strong>players:enrich-data:</strong> Arricchisce i dati dei giocatori da API esterna (football-data.org).<br>Opzioni:<br> - <code>--player_id=all|ID_DB</code> (Default: all).<br> - <code>--player_name=NOME</code>.<br> - <code>--delay=SECONDI</code> (Default: 6)."
                 ],
-                7 => [ // EX FASE 6
+                8 => [ // EX FASE 6
                     'data' => $fbrefScrapingStatus,
-                    'title_prefix' => '7.',
+                    'title_prefix' => '8.',
                     'title' => 'Scraping Dati FBRef Grezzi',
                     'action_text' => 'Raschia le statistiche dettagliate da FBRef per squadre/stagioni di interesse.',
                     'artisan_commands' => ["php artisan fbref:scrape-team \"URL_FBREF_SQUADRA\" --team_id=ID_SQUADRA_DB --season=YYYY --league=\"Nome Lega\""],
                     'artisan_notes' => "Sostituisci i placeholder. Utile per dati storici dettagliati.",
                     'artisan_tooltip' => "<strong>fbref:scrape-team:</strong> Scarica statistiche da una pagina squadra di FBRef.<br>Args: <code>url</code>.<br>Opzioni: <code>--team_id</code>, <code>--season</code>, <code>--league</code> (tutti obbligatori per un corretto salvataggio)."
                 ],
-                8 => [ // EX FASE 7
+                9 => [ // EX FASE 7
                     'data' => $fbrefProcessingStatus,
-                    'title_prefix' => '8.',
+                    'title_prefix' => '9.',
                     'title' => 'Processamento Dati FBRef -> Storico Elaborato',
                     'action_text' => 'Trasforma i dati grezzi di FBRef in uno storico utilizzabile per le proiezioni.',
                     'artisan_commands' => ["php artisan stats:process-fbref-to-historical --season=" . $lastCompletedSeasonStartYear ],
                     'artisan_notes' => "Questo comando è DA IMPLEMENTARE. Processerà i dati FBRef.",
                     'artisan_tooltip' => "<strong>stats:process-fbref-to-historical:</strong> (DA IMPLEMENTARE) Processa dati FBRef grezzi e li salva in 'historical_player_stats'.<br>Opzioni: <code>--season</code>, <code>--player_id</code>, <code>--overwrite</code>."
                 ],
-                9 => [ // EX FASE 8
+                10 => [ // EX FASE 8
                     'data' => $otherHistoricalStatsStatus,
-                    'title_prefix' => '9.',
+                    'title_prefix' => '10.',
                     'title' => 'Importazione Altre Statistiche Storiche',
                     'action_text' => 'Carica eventuali altri file di statistiche storiche (es. XLSX standard o CSV avanzati).',
                     'route_name' => 'historical_stats.show_upload_form',
@@ -113,18 +121,18 @@
                     'artisan_notes' => "Per file CSV/XLSX con colonna 'NomeLega', usa il comando Artisan.",
                     'artisan_tooltip' => "<strong>players:import-advanced-stats:</strong> Importa storico giocatori da file CSV/XLSX con lega specificata per stagione.<br>Args: <code>filepath</code>.<br>Opzioni: <code>--league</code> (fallback)."
                 ],
-                10 => [ // EX FASE 9
+                11 => [ // EX FASE 9
                     'data' => $projectionsStatus,
-                    'title_prefix' => '10.',
+                    'title_prefix' => '11.',
                     'title' => 'Generazione Proiezioni Finali (Stagione ' . $currentSeasonDisplay . ')',
                     'action_text' => 'Calcola e salva le proiezioni finali per tutti i giocatori.',
                     'artisan_commands' => ["php artisan players:generate-projections"],
                     'artisan_notes' => "Questo comando è DA IMPLEMENTARE.",
                     'artisan_tooltip' => "<strong>players:generate-projections:</strong> (DA IMPLEMENTARE) Genera proiezioni finali e le salva in 'players'."
                 ],
-                11 => [ // EX FASE 10
+                12 => [ // EX FASE 10
                     'data' => $projectionsStatus, // Usa lo stesso status delle proiezioni
-                    'title_prefix' => '11.',
+                    'title_prefix' => '12.',
                     'title' => 'Verifica Proiezioni',
                     'action_text' => "Testa una proiezione per un singolo giocatore via Artisan:",
                     'artisan_commands' => ["php artisan test:projection ID_GIOCATORE_FANTACALCIO"],

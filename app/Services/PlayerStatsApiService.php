@@ -53,12 +53,10 @@ class PlayerStatsApiService
         
         Log::info("PlayerStatsApiService: Effettuando richiesta {$method} a {$fullUrl}", ['params' => $params]);
         
-        // --- NUOVO LOG DI DEBUG ---
         Log::debug('PlayerStatsApiService: Dettagli autenticazione in uscita.', [
             'header_name'  => $this->apiKeyName,
             'api_key_value' => $this->apiKey ? 'Token presente (lunghezza: ' . strlen($this->apiKey) . ')' : 'TOKEN MANCANTE O VUOTO!',
         ]);
-        // --- FINE NUOVO LOG DI DEBUG ---
         
         try {
             $response = Http::withHeaders([
@@ -68,7 +66,8 @@ class PlayerStatsApiService
             if ($method === 'GET') {
                 $response = $response->get($fullUrl, $params);
             } else {
-                $response = $response->{$method}($fullUrl, $params);
+                // Per POST, PUT, etc. Laravel si aspetta il verbo in minuscolo
+                $response = $response->{strtolower($method)}($fullUrl, $params);
             }
             
             if ($response->successful()) {
@@ -125,10 +124,32 @@ class PlayerStatsApiService
         return $this->makeRequest($endpoint);
     }
     
-    // NUOVO: Aggiungiamo un metodo wrapper per la rosa, se non esiste
     public function getTeamSquad(int $apiTeamId): ?array
     {
         $endpoint = "teams/{$apiTeamId}";
         return $this->makeRequest($endpoint);
+    }
+    
+    // ===================================================================
+    //  <<<<<<<<<<<<<<<<<< FUNZIONE MANCANTE AGGIUNTA QUI >>>>>>>>>>>>>>>>>
+    // ===================================================================
+    /**
+     * Recupera la rosa (squad) per una squadra specifica in una data stagione.
+     */
+    public function getPlayersForTeamAndSeason(int $teamApiId, int $seasonYear): ?array
+    {
+        $endpoint = "teams/{$teamApiId}";
+        $params = ['season' => $seasonYear];
+        
+        $response = $this->makeRequest($endpoint, $params);
+        
+        // La rosa dei giocatori è nell'array 'squad' della risposta API di football-data.org
+        // Lo restituiamo in un formato che il nostro comando si aspetta.
+        if (isset($response['squad'])) {
+            return ['players' => $response['squad']];
+        }
+        
+        Log::warning("Nessun array 'squad' trovato nella risposta API per il team ID: {$teamApiId}");
+        return null;
     }
 }

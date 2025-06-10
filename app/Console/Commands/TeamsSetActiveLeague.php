@@ -6,7 +6,8 @@ use Illuminate\Console\Command;
 use App\Services\TeamDataService;
 use App\Services\PlayerStatsApiService;
 use App\Models\Team;
-use Illuminate\Support\Facades\Log; // <-- AGGIUNGI QUESTA RIGA!
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\DB;
 use App\Models\ImportLog;
 
 class TeamsSetActiveLeague extends Command
@@ -46,6 +47,7 @@ class TeamsSetActiveLeague extends Command
      */
     public function handle()
     {
+        // --- SETUP INIZIALE ---
         $targetSeasonStartYear = $this->option('target-season-start-year');
         $leagueCode = strtoupper($this->option('league-code'));
         $setInactiveFirstOption = $this->option('set-inactive-first');
@@ -58,88 +60,144 @@ class TeamsSetActiveLeague extends Command
         $targetSeasonStartYear = (int)$targetSeasonStartYear;
         $seasonDisplay = $targetSeasonStartYear . '-' . substr($targetSeasonStartYear + 1, 2);
         
-        $this->info("Avvio comando TeamsSetActiveLeague per lega {$leagueCode}, stagione {$seasonDisplay}. Inattivazione preliminare: " . ($setInactiveFirst ? 'Sì' : 'No'));
+        $this->info("Avvio comando per lega {$leagueCode}, stagione {$seasonDisplay}. Inattivazione preliminare: " . ($setInactiveFirst ? 'Sì' : 'No'));
         
         $startTime = microtime(true);
         $updatedCount = 0;
         $createdCount = 0;
-        $notFoundCount = 0;
         $failedApiCount = 0;
         
         if ($setInactiveFirst) {
-            // Disattiva tutte le squadre in Serie A, indipendentemente dalla stagione
             $inactiveCount = Team::where('serie_a_team', true)->update(['serie_a_team' => false]);
             $this->info("Impostato serie_a_team=false per {$inactiveCount} team.");
         }
         
         $this->info("Recupero squadre da API per {$leagueCode}, stagione {$targetSeasonStartYear}...");
-        // Usa il PlayerStatsApiService iniettato
         $apiTeamsData = $this->playerStatsApiService->getTeamsForCompetitionAndSeason($leagueCode, $targetSeasonStartYear);
         
-        if (!$apiTeamsData || !isset($apiTeamsData['teams']) || empty($apiTeamsData['teams'])) {
-            $errorMessage = "Nessuna squadra ricevuta dall'API per lega {$leagueCode}, stagione {$targetSeasonStartYear}, o risposta API vuota/malformata.";
+        if (empty($apiTeamsData['teams'])) {
+            $errorMessage = "Nessuna squadra ricevuta dall'API per lega {$leagueCode}, stagione {$targetSeasonStartYear}.";
             $this->error($errorMessage);
-            Log::error($errorMessage, ['api_response' => $apiTeamsData]);
-            ImportLog::create([
-                'import_type' => 'set_active_teams_' . strtolower($leagueCode),
-                'status' => 'fallito',
-                'details' => $errorMessage,
-                'original_file_name' => "API Fetch {$leagueCode} {$seasonDisplay}"
-                ]);
+            Log::error($errorMessage, ['api_response' => $apiTeamsData ?? null]);
             return Command::FAILURE;
         }
         
         $this->info("Trovate " . count($apiTeamsData['teams']) . " squadre dall'API. Processamento...");
-        
         foreach ($apiTeamsData['teams'] as $apiTeam) {
             if (empty($apiTeam['id']) || empty($apiTeam['name'])) {
-                $this->warn("Dati squadra API incompleti o corrotti, saltata: " . json_encode($apiTeam));
+                $this->warn("Dati squadra API incompleti, saltata: " . json_encode($apiTeam));
                 $failedApiCount++;
                 continue;
             }
             
-            // Passa l'anno della stagione a TeamDataService per salvarlo
-            $team = $this->teamDataService->updateOrCreateTeamFromApiData($apiTeam, $leagueCode, $targetSeasonStartYear); // <-- PASSATO targetSeasonYear
+            $apiTeamId = $apiTeam['id'];
+            $apiTeamName = $apiTeam['name'];
+            $apiTeamShortName = $apiTeam['shortName'] ?? null;
+            $apiTla = $apiTeam['tla'] ?? null;
+            $apiCrestUrl = $apiTeam['crest'] ?? null;
+            
+            // --- Livello 1: Cerca per API ID ---
+            $team = Team::where('api_football_data_id', $apiTeamId)->first();
             
             if ($team) {
-                // Applica il flag corretto in base alla lega
+                // --- TROVATO TRAMITE ID ---
+                $this->line("Match su API ID ({$apiTeamId}): Aggiorno '{$team->name}'.");
+                $team->name = $apiTeamName;
+                $team->short_name = $apiTeamShortName;
+                $team->tla = $apiTla;
+                $team->crest_url = $apiCrestUrl;
+                $team->league_code = $leagueCode;
+                $team->season_year = $targetSeasonStartYear;
                 if ($leagueCode === 'SA') {
                     $team->serie_a_team = true;
                 }
-                // Il campo season_year è già impostato in TeamDataService::updateOrCreateTeamFromApiData
-                
-                if ($team->isDirty() || $team->wasRecentlyCreated) {
-                    $team->save();
-                }
-                
-                if ($team->wasRecentlyCreated) {
-                    $createdCount++;
-                }
+                $team->save();
                 $updatedCount++;
-                $this->line("Processata squadra API '{$apiTeam['name']}' (API ID: {$apiTeam['id']}) -> DB Team '{$team->name}' (DB ID: {$team->id})");
-                
             } else {
-                $this->warn("Fallimento nel creare/aggiornare squadra API '{$apiTeam['name']}' (API ID: {$apiTeam['id']}) tramite TeamDataService.");
-                $notFoundCount++;
+                // --- Livello 2: Cerca per TLA ---
+                $this->line("Nessun match per API ID {$apiTeamId}. Cerco per TLA: '{$apiTla}'...");
+                $team = null;
+                if ($apiTla) {
+                    $team = Team::where('tla', $apiTla)->first();
+                }
+                
+                if ($team) {
+                    // --- TROVATO TRAMITE TLA ---
+                    $this->line("Match su TLA: '{$apiTla}' (DB ID: {$team->id}). Collego API ID {$apiTeamId}.");
+                    $team->api_football_data_id = $apiTeamId;
+                    $team->name = $apiTeamName;
+                    $team->short_name = $apiTeamShortName;
+                    $team->crest_url = $apiCrestUrl;
+                    $team->league_code = $leagueCode;
+                    $team->season_year = $targetSeasonStartYear;
+                    if ($leagueCode === 'SA') {
+                        $team->serie_a_team = true;
+                    }
+                    $team->save();
+                    $updatedCount++;
+                } else {
+                    // --- Livello 3: Cerca con LIKE su nome e short_name ---
+                    $this->line("Nessun match per TLA. Cerco per nome con LIKE/LOWER...");
+                    $team = Team::where(function ($query) use ($apiTeamName, $apiTeamShortName) {
+                        $query->where(DB::raw('LOWER(name)'), 'LIKE', '%' . strtolower($apiTeamName) . '%')
+                        ->orWhere(DB::raw('LOWER(short_name)'), 'LIKE', '%' . strtolower($apiTeamName) . '%');
+                        
+                        if ($apiTeamShortName && $apiTeamShortName !== $apiTeamName) {
+                            $query->orWhere(DB::raw('LOWER(name)'), 'LIKE', '%' . strtolower($apiTeamShortName) . '%')
+                            ->orWhere(DB::raw('LOWER(short_name)'), 'LIKE', '%' . strtolower($apiTeamShortName) . '%');
+                        }
+                    })->first();
+                    
+                    if ($team) {
+                        // --- TROVATO TRAMITE LIKE ---
+                        $this->line("Match su NOME (LIKE): '{$apiTeamName}' (DB ID: {$team->id}). Collego API ID {$apiTeamId}.");
+                        $team->api_football_data_id = $apiTeamId;
+                        $team->name = $apiTeamName;
+                        $team->short_name = $apiTeamShortName;
+                        $team->tla = $apiTla;
+                        $team->crest_url = $apiCrestUrl;
+                        $team->league_code = $leagueCode;
+                        $team->season_year = $targetSeasonStartYear;
+                        if ($leagueCode === 'SA') {
+                            $team->serie_a_team = true;
+                        }
+                        $team->save();
+                        $updatedCount++;
+                    } else {
+                        // --- Livello 4: Crea Nuova Squadra ---
+                        $this->line("Nessun match. Creo nuova squadra: '{$apiTeamName}'.");
+                        Team::create([
+                            'name' => $apiTeamName,
+                            'short_name' => $apiTeamShortName,
+                            'tla' => $apiTla,
+                            'api_football_data_id' => $apiTeamId,
+                            'crest_url' => $apiCrestUrl,
+                            'league_code' => $leagueCode,
+                            'season_year' => $targetSeasonStartYear,
+                            'serie_a_team' => ($leagueCode === 'SA'),
+                        ]);
+                        $createdCount++;
+                    }
+                }
             }
         }
         
+        // --- SOMMARIO FINALE ---
         $duration = microtime(true) - $startTime;
-        $summary = "Comando TeamsSetActiveLeague completato per lega {$leagueCode}, stagione {$seasonDisplay} in " . round($duration, 2) . " secondi. ";
-        $summary .= "Squadre processate con successo (create/aggiornate nel DB): {$updatedCount} (di cui nuove: {$createdCount}). ";
-        $summary .= "Fallimenti creazione/aggiornamento via servizio: {$notFoundCount}. ";
-        $summary .= "Squadre API con dati incompleti saltate: {$failedApiCount}.";
+        $summary = "Comando completato per lega {$leagueCode}, stagione {$seasonDisplay} in " . round($duration, 2) . "s. ";
+        $summary .= "Create: {$createdCount}, Aggiornate: " . ($updatedCount) . ". ";
+        $summary .= "Squadre API con dati incompleti: {$failedApiCount}.";
         
         $this->info($summary);
         Log::info($summary);
         
         ImportLog::create([
             'import_type' => 'set_active_teams_' . strtolower($leagueCode),
-            'status' => ($notFoundCount === 0 && $failedApiCount === 0) ? 'successo' : 'parziale',
+            'status' => ($failedApiCount === 0) ? 'successo' : 'parziale',
             'details' => $summary,
             'rows_created' => $createdCount,
-            'rows_updated' => $updatedCount - $createdCount,
-            'rows_failed' => $notFoundCount + $failedApiCount,
+            'rows_updated' => $updatedCount,
+            'rows_failed' => $failedApiCount,
             'original_file_name' => "API Fetch {$leagueCode} {$seasonDisplay}"
             ]);
         
