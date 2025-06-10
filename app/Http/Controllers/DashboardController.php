@@ -114,12 +114,53 @@ class DashboardController extends Controller
         return $this->getVisualAttributesForStatus($statusString, $details);
     }
     
+    // In app/Http/Controllers/DashboardController.php
+    
     private function getStandingsStatus(): array
     {
-        $count = TeamHistoricalStanding::count();
-        $statusString = $count > 0 ? 'Dati Presenti' : 'Non Popolato';
-        $details = "Trovati {$count} record di classifiche storiche.";
-        return $this->getVisualAttributesForStatus($statusString, $details);
+        // Recupera le impostazioni dal file di configurazione
+        $lookbackSeasons = config('team_tiering_settings.lookback_seasons_for_tiering', 3);
+        
+        // 1. Identifica le squadre di Serie A attive
+        $activeSerieATeams = Team::where('serie_a_team', true)->get();
+        $activeTeamCount = $activeSerieATeams->count();
+        
+        if ($activeTeamCount < 20) {
+            return $this->getVisualAttributesForStatus(
+                'Non Applicabile',
+                'Definire prima le 20 squadre di Serie A (Fase 4) per controllare lo storico.'
+                );
+        }
+        
+        // 2. Conta quante delle squadre attive hanno abbastanza dati storici
+        $teamsWithSufficientHistory = 0;
+        foreach ($activeSerieATeams as $team) {
+            $historyCount = TeamHistoricalStanding::where('team_id', $team->id)->count();
+            if ($historyCount >= $lookbackSeasons) {
+                $teamsWithSufficientHistory++;
+            }
+        }
+        
+        // 3. Determina lo stato basandosi sul nuovo controllo
+        $statusString = 'Non Popolato';
+        $details = "Lo storico delle classifiche non è ancora stato popolato.";
+        
+        if ($teamsWithSufficientHistory >= $activeTeamCount) {
+            $statusString = 'Completato';
+            $details = "Trovato storico sufficiente (almeno {$lookbackSeasons} stagioni) per tutte le {$activeTeamCount} squadre di Serie A.";
+        } elseif ($teamsWithSufficientHistory > 0) {
+            $statusString = 'Parziale';
+            $details = "Solo {$teamsWithSufficientHistory} su {$activeTeamCount} squadre di Serie A hanno uno storico sufficiente (almeno {$lookbackSeasons} stagioni). Si consiglia di completare il popolamento.";
+        }
+        
+        $visualAttributes = $this->getVisualAttributesForStatus($statusString, $details);
+        
+        // Mostra sempre l'azione se lo stato non è 'Completato'
+        if ($statusString !== 'Completato') {
+            $visualAttributes['showAction'] = true;
+        }
+        
+        return $visualAttributes;
     }
     
     private function getRosterStatus(): array
@@ -273,5 +314,42 @@ class DashboardController extends Controller
     private function getCurrentSeasonYear(): int
     {
         return date('m') >= 7 ? (int)date('Y') : (int)date('Y') - 1;
+    }
+    
+    // In app/Http/Controllers/DashboardController.php
+    
+    public function showHistoricalCoverage()
+    {
+        // Recupera le impostazioni dal file di configurazione
+        $lookbackSeasons = config('team_tiering_settings.lookback_seasons_for_tiering', 3);
+        $startYear = date('Y') - 1; // Ultima stagione conclusa
+        $requiredSeasons = range($startYear, $startYear - $lookbackSeasons + 1);
+        
+        // Recupera le 20 squadre di Serie A attive
+        $activeTeams = \App\Models\Team::where('serie_a_team', true)->orderBy('name')->get();
+        
+        $coverageData = [];
+        foreach ($activeTeams as $team) {
+            // Per ogni squadra, prendi lo storico disponibile
+            $historicalData = \App\Models\TeamHistoricalStanding::where('team_id', $team->id)
+            ->whereIn('season_year', $requiredSeasons)
+            ->pluck('season_year')
+            ->all();
+            
+            $missingSeasons = array_diff($requiredSeasons, $historicalData);
+            
+            $coverageData[] = [
+                'team_name' => $team->name,
+                'required_seasons' => $requiredSeasons,
+                'available_seasons' => $historicalData,
+                'missing_seasons' => array_values($missingSeasons),
+                'is_complete' => empty($missingSeasons),
+            ];
+        }
+        
+        return view('dashboard.historical_coverage', [
+            'coverageData' => $coverageData,
+            'requiredSeasons' => $requiredSeasons
+        ]);
     }
 }

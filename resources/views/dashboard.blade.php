@@ -30,6 +30,7 @@
                     'title_prefix' => '1.',
                     'title' => 'Popolamento Squadre Base e ID API (da football-data.org)',
                     'action_text' => "Popola/aggiorna le squadre e i loro ID API da football-data.org. È cruciale per poter scaricare le classifiche storiche via API.",
+                    'route_name' => 'dashboard.historical_coverage',
                     'artisan_commands' => [
                         "php artisan teams:set-active-league --target-season-start-year={$lastCompletedSeasonStartYear} --league-code=SA",
                         "php artisan teams:set-active-league --target-season-start-year={$currentSeasonStartYear} --league-code=SA"
@@ -42,6 +43,10 @@
                     'title_prefix' => '2.',
                     'title' => 'Popolamento Dati Storici Classifiche (API/CSV)',
                     'action_text' => 'Importa le classifiche storiche. Se usi l\'API, assicurati che le squadre siano state popolate con gli ID API (Fase 1).',
+                    'route_name' => 'dashboard.historical_coverage',
+    'route_text' => 'Vedi Dettaglio Copertura',
+    'icon_action_route' => 'fa-search-plus',
+    'show_action_override' => true,
                     'artisan_commands' => [
                         "php artisan teams:fetch-historical-standings --season={$lastCompletedSeasonStartYear} --competition=SA",
                         "php artisan teams:import-standings-file \"storage/app/import/classifica_serie_a_2022-23.csv\" --season-start-year=2022 --league-name=\"Serie A\" --create-missing-teams=true --is-serie-a-league=true"

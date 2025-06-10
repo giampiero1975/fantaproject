@@ -35,3 +35,5 @@ Route::post('/league/profile', [UserLeagueProfileController::class, 'update'])->
 
 // --- NUOVO: Rotta per la visualizzazione delle proiezioni ---
 Route::get('/projections', [PlayerProjectionController::class, 'index'])->name('projections.index');
+
+Route::get('/dashboard/historical-coverage', [DashboardController::class, 'showHistoricalCoverage'])->name('dashboard.historical_coverage');
