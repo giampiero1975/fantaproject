@@ -141,6 +141,15 @@ class DataEnrichmentService
     
     public function enrichPlayerFromApi(Player $player): bool
     {
+        // --- NUOVO LOG DI DEBUG ---
+        Log::debug("DataEnrichmentService: Inizio arricchimento. Dati giocatore ricevuto:", [
+            'player_id' => $player->id,
+            'player_name' => $player->name,
+            'player_team_name' => $player->team_name, // Il nome testuale della squadra
+            'player_team_id' => $player->team_id,   // L'ID numerico che collega alla tabella teams (CRUCIALE)
+        ]);
+        // --- FINE NUOVO LOG DI DEBUG ---
+        
         if (empty($this->apiKey)) {
             return $this->logAndReturnFalse("API Key non disponibile. Impossibile procedere con l'arricchimento per {$player->name}.");
         }

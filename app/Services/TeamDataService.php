@@ -61,7 +61,7 @@ class TeamDataService
                 $team = new Team($teamData);
                 // Imposta i default per le nuove squadre
                 $team->serie_a_team = false; // Default a false, sarà impostato dal comando TeamsSetActiveLeague
-                $team->tier = 0; // Default a 0, sarà calcolato dal comando TeamsUpdateTiers
+                $team->tier = null; // Default a 0, sarà calcolato dal comando TeamsUpdateTiers
                 $team->save();
                 Log::info("Nuova squadra creata: {$team->name} (ID: {$team->id})");
             }
@@ -71,8 +71,6 @@ class TeamDataService
             return null;
         }
     }
-    
-    // ... (altri metodi esistenti) ...
     
     /**
      * Scarica e memorizza le classifiche storiche di una competizione per una specifica stagione.

@@ -10,13 +10,18 @@
         @php
             // Definizione delle stagioni dinamiche per i comandi e i titoli
             $currentYear = date('Y');
+            
             $lastCompletedSeasonStartYear = $currentYear - 1; // Ultima stagione completata (es. per storico)
+            
             $currentSeasonStartYear = $currentYear;     // Stagione corrente o che sta per iniziare (es. per roster)
-            $nextAuctionSeasonStartYear = $currentYear +1; // Prossima stagione d'asta
+            
+            $nextAuctionSeasonStartYear = $currentYear; // Prossima stagione d'asta
 
-            $lastCompletedSeasonDisplay = $lastCompletedSeasonStartYear . '-' . substr($lastCompletedSeasonStartYear + 1, -2);
-            $currentSeasonDisplay = $currentSeasonStartYear . '-' . substr($currentSeasonStartYear + 1, -2);
-            $nextAuctionSeasonDisplay = $nextAuctionSeasonStartYear . '-' . substr($nextAuctionSeasonStartYear + 2, -2); // Es. 2025-26
+			$lastCompletedSeasonDisplay = $lastCompletedSeasonStartYear . '-' . substr($lastCompletedSeasonStartYear + 1, -2);
+    
+			$currentSeasonDisplay = $currentSeasonStartYear . '-' . substr($currentSeasonStartYear + 1, -2);
+    
+			$nextAuctionSeasonDisplay = $nextAuctionSeasonStartYear . '-' . substr($nextAuctionSeasonStartYear + 1, -2);
 
             // Array che definisce tutte le fasi della dashboard
             $phases = [
@@ -55,7 +60,7 @@
                     'artisan_tooltip' => "Operazione via UI. Crea/aggiorna giocatori e squadre, mappa 'fanta_platform_id'."
                 ],
                 4 => [ // EX FASE 2, ma ora specifico per l'ASTA
-                    'data' => $activeTeamsStatus, // Potrebbe servire uno status dedicato se questo si riferisce a un diverso target year
+                    'data' => $auctionTeamsStatus,
                     'title_prefix' => '4.',
                     'title' => 'Definizione Squadre Serie A Attive (per Asta ' . $nextAuctionSeasonDisplay . ')',
                     'action_text' => 'Definisci le squadre che parteciperanno specificamente alla prossima asta di Serie A.',

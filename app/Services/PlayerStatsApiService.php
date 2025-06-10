@@ -10,14 +10,12 @@ class PlayerStatsApiService
     protected string $baseUrl;
     protected string $apiKey;
     protected string $apiKeyName;
-    protected string $activeProvider; // Nome del provider API attivo
-    protected array $apiConfig;      // Configurazione per il provider attivo
+    protected string $activeProvider;
+    protected array $apiConfig;
     
     public function __construct()
     {
-        // Forziamo l'uso di 'football_data_org' come unico provider
         $this->activeProvider = 'football_data_org';
-        
         $configPath = "services.player_stats_api.providers.{$this->activeProvider}";
         $this->apiConfig = config($configPath);
         
@@ -27,7 +25,7 @@ class PlayerStatsApiService
             throw new \Exception($errorMessage);
         }
         
-        $this->baseUrl = rtrim($this->apiConfig['base_url'], '/'); // Assicura che non ci sia uno slash finale
+        $this->baseUrl = rtrim($this->apiConfig['base_url'], '/');
         $this->apiKey = $this->apiConfig['api_key'];
         $this->apiKeyName = $this->apiConfig['api_key_name'];
         
@@ -40,40 +38,36 @@ class PlayerStatsApiService
         Log::info("PlayerStatsApiService initializzato con provider: {$this->activeProvider}, Base URL: {$this->baseUrl}");
     }
     
-    /**
-     * Restituisce il nome della variabile d'ambiente per la chiave API del provider.
-     */
     private function getApiKeyEnvVariable(string $provider): string
     {
-        // Questo è un helper, potresti renderlo più generico se avessi molti provider
-        // Basato sulla struttura in config/services.php
-        // 'api_key' => env('FOOTBALL_DATA_API_KEY')
         if ($provider === 'football_data_org') {
             return 'FOOTBALL_DATA_API_KEY';
         }
-        // Aggiungi altri casi se reintroduci altri provider
         return 'CHIAVE_API_SCONOSCIUTA';
     }
     
-    /**
-     * Esegue una richiesta HTTP all'API.
-     */
     protected function makeRequest(string $endpoint, array $params = [], string $method = 'GET')
     {
         $fullUrl = $this->baseUrl . '/' . ltrim($endpoint, '/');
-        $method = strtoupper($method); // Assicura che il metodo sia maiuscolo
+        $method = strtoupper($method);
         
         Log::info("PlayerStatsApiService: Effettuando richiesta {$method} a {$fullUrl}", ['params' => $params]);
+        
+        // --- NUOVO LOG DI DEBUG ---
+        Log::debug('PlayerStatsApiService: Dettagli autenticazione in uscita.', [
+            'header_name'  => $this->apiKeyName,
+            'api_key_value' => $this->apiKey ? 'Token presente (lunghezza: ' . strlen($this->apiKey) . ')' : 'TOKEN MANCANTE O VUOTO!',
+        ]);
+        // --- FINE NUOVO LOG DI DEBUG ---
         
         try {
             $response = Http::withHeaders([
                 $this->apiKeyName => $this->apiKey,
-            ])->timeout(30); // Timeout di 30 secondi
+            ])->timeout(30);
             
             if ($method === 'GET') {
                 $response = $response->get($fullUrl, $params);
             } else {
-                // Aggiungi gestione per altri metodi se necessario (POST, PUT, ecc.)
                 $response = $response->{$method}($fullUrl, $params);
             }
             
@@ -82,7 +76,6 @@ class PlayerStatsApiService
                 return $response->json();
             }
             
-            // Gestione errori specifici di football-data.org
             $errorMessage = "PlayerStatsApiService: Richiesta API fallita a {$fullUrl}. Status: {$response->status()}";
             $responseData = $response->json();
             if (isset($responseData['message'])) {
@@ -94,7 +87,7 @@ class PlayerStatsApiService
             
             Log::error($errorMessage, [
                 'response_status' => $response->status(),
-                'response_body' => $response->body(), // Logga il corpo per debug
+                'response_body' => $response->body(),
             ]);
             return null;
             
@@ -112,22 +105,13 @@ class PlayerStatsApiService
         return $this->baseUrl;
     }
     
-    /**
-     * Recupera le squadre per una data competizione e stagione.
-     * L'endpoint per football-data.org è competitions/{competitionCode}/teams?season={seasonStartYear}
-     */
     public function getTeamsForCompetitionAndSeason(string $competitionCode, int $seasonStartYear): ?array
     {
-        // football-data.org usa l'anno di inizio della stagione (es. 2023 per la stagione 2023/24)
         $endpoint = "competitions/{$competitionCode}/teams";
         $params = ['season' => $seasonStartYear];
         return $this->makeRequest($endpoint, $params);
     }
     
-    /**
-     * Recupera le classifiche per una data competizione e stagione.
-     * L'endpoint per football-data.org è competitions/{competitionCode}/standings?season={seasonStartYear}
-     */
     public function getStandingsForCompetitionAndSeason(string $competitionCode, int $seasonStartYear): ?array
     {
         $endpoint = "competitions/{$competitionCode}/standings";
@@ -135,15 +119,16 @@ class PlayerStatsApiService
         return $this->makeRequest($endpoint, $params);
     }
     
-    /**
-     * Recupera i dettagli di un singolo giocatore (persona) dall'ID API.
-     * L'endpoint per football-data.org è /v4/persons/{id}
-     */
     public function getPlayerDetails(int $apiPlayerId): ?array
     {
-        // Nota: football-data.org usa 'persons' e non 'players' per i dettagli del singolo giocatore.
-        // L'ID deve essere quello specifico di football-data.org per quella persona.
         $endpoint = "persons/{$apiPlayerId}";
+        return $this->makeRequest($endpoint);
+    }
+    
+    // NUOVO: Aggiungiamo un metodo wrapper per la rosa, se non esiste
+    public function getTeamSquad(int $apiTeamId): ?array
+    {
+        $endpoint = "teams/{$apiTeamId}";
         return $this->makeRequest($endpoint);
     }
 }

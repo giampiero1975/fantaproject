@@ -25,18 +25,26 @@ class DashboardController extends Controller
     
     public function index(): View
     {
-        $data = [
-            'standingsStatus'         => $this->getStandingsStatus(),
-            'activeTeamsStatus'       => $this->getActiveTeamsStatus(), // Questo ora riflette lo stato di teams:set-active-league
-            'tiersStatus'             => $this->getTiersStatus(),
-            'rosterStatus'            => $this->getRosterStatus(),
-            'enrichmentStatus'        => $this->getEnrichmentStatus(),
-            'fbrefScrapingStatus'     => $this->getFbrefScrapingStatus(),
-            'fbrefProcessingStatus'   => $this->getFbrefProcessingStatus(),
-            'otherHistoricalStatsStatus' => $this->getOtherHistoricalStatsStatus(),
-            'projectionsStatus'       => $this->getProjectionsStatus(),
-        ];
-        return view('dashboard', $data);
+        // Esegui tutte le funzioni per ottenere gli stati delle varie fasi
+        $activeTeamsStatus = $this->getActiveTeamsStatus();
+        $standingsStatus = $this->getStandingsStatus();
+        $rosterStatus = $this->getRosterStatus();
+        $tiersStatus = $this->getTiersStatus();
+        $enrichmentStatus = $this->getEnrichmentStatus();
+        $fbrefScrapingStatus = $this->getFbrefScrapingStatus();
+        $fbrefProcessingStatus = $this->getFbrefProcessingStatus();
+        $otherHistoricalStatsStatus = $this->getOtherHistoricalStatsStatus();
+        $projectionsStatus = $this->getProjectionsStatus();
+        
+        // 1. Esegui la nuova funzione che abbiamo creato
+        $auctionTeamsStatus = $this->getAuctionTeamsStatus();
+        
+        // 2. Ritorna la vista e passa tutte le variabili di stato, INCLUSA la nuova
+        return view('dashboard', compact(
+            'activeTeamsStatus', 'standingsStatus', 'rosterStatus', 'tiersStatus', 'enrichmentStatus',
+            'fbrefScrapingStatus', 'fbrefProcessingStatus', 'otherHistoricalStatsStatus', 'projectionsStatus',
+            'auctionTeamsStatus' // <-- Eccola!
+            ));
     }
     
     private function getVisualAttributesForStatus(string $statusString, $additionalData = []): array
@@ -244,53 +252,54 @@ class DashboardController extends Controller
         ], $visualAttributes);
     }
     
+    // File: app/Http/Controllers/DashboardController.php
+    
     private function getTiersStatus(): array
     {
-        $activeSerieATeams = Team::where('serie_a_team', true)->get();
-        $totalActiveTeams = $activeSerieATeams->count();
-        $teamsWithTier = $activeSerieATeams->whereNotNull('tier')->where('tier', '>', 0)->count();
-        $lastRun = ImportLog::where('import_type', 'update_team_tiers')
-        ->latest('created_at')
-        ->first();
-        $details = '';
-        $statusString = 'Non calcolato';
-        $lastRunDate = 'N/A';
+        $status = [
+            'status_title' => 'Non Calcolato',
+            'details' => 'I tier di forza per le squadre attive non sono ancora stati calcolati.',
+            'badgeClass' => 'bg-danger',
+            'iconClass' => 'fas fa-times-circle text-danger',
+            'cardBorderClass' => 'border-danger',
+            'showAction' => true,
+        ];
         
-        if ($totalActiveTeams === 0) {
-            $statusString = 'Non applicabile';
-            $details = "Nessuna squadra attiva definita per calcolare i tier.";
-        } elseif ($teamsWithTier === $totalActiveTeams && $totalActiveTeams > 0) {
-            $statusString = 'Calcolato';
-            $details = "Tier calcolati per tutte le {$totalActiveTeams} squadre attive.";
-        } elseif ($teamsWithTier > 0) {
-            $statusString = 'Parzialmente calcolato';
-            $details = "Tier calcolati per {$teamsWithTier}/{$totalActiveTeams} squadre attive.";
-        } else {
-            $details = "Nessun tier calcolato per le {$totalActiveTeams} squadre attive.";
+        $activeTeams = Team::where('serie_a_team', true)->get();
+        $activeTeamsCount = $activeTeams->count();
+        
+        if ($activeTeamsCount === 0) {
+            return [
+                'status_title' => 'Non Applicabile',
+                'details' => 'Nessuna squadra attiva definita. Completa la Fase 4.',
+                'badgeClass' => 'bg-secondary',
+                'iconClass' => 'fas fa-ban text-secondary',
+                'cardBorderClass' => 'border-secondary',
+                'showAction' => false,
+            ];
         }
         
-        if ($lastRun) {
-            $lastRunDate = Carbon::parse($lastRun->created_at)->format('d/m/Y H:i');
-            $statusLastRun = $lastRun->status === 'successo' ? 'successo' : 'fallito';
-            $details .= " Ultimo calcolo: {$lastRunDate} (Stato: {$statusLastRun}).";
-            if ($lastRun->status !== 'successo' && $statusString !== 'Calcolato' && $statusString !== 'Non applicabile') {
-                $statusString = 'Errore Ultimo Calcolo';
-            }
+        // NUOVO CONTROLLO SEMPLIFICATO: Conta le squadre dove il tier NON è NULL
+        $calculatedTiersCount = $activeTeams->whereNotNull('tier')->count();
+        
+        if ($calculatedTiersCount >= $activeTeamsCount) {
+            $status = [
+                'status_title' => 'Calcolato',
+                'details' => "Tier calcolati per tutte le {$activeTeamsCount} squadre attive.",
+                'badgeClass' => 'bg-success',
+                'iconClass' => 'fas fa-check-circle text-success',
+                'cardBorderClass' => 'border-success',
+                'showAction' => false,
+                ];
+        } elseif ($calculatedTiersCount > 0) {
+            $status['status_title'] = 'Parziale';
+            $status['details'] = "Tier calcolati solo per {$calculatedTiersCount} su {$activeTeamsCount} squadre attive.";
+            $status['badgeClass'] = 'bg-warning';
+            $status['iconClass'] = 'fas fa-exclamation-triangle text-warning';
+            $status['cardBorderClass'] = 'border-warning';
         }
         
-        $currentYear = date('Y');
-        $targetSeasonForAction = $currentYear;
-        if (Carbon::now()->month >= 7) {
-            $targetSeasonForAction = $currentYear + 1;
-        }
-        
-        $visualAttributes = $this->getVisualAttributesForStatus($statusString);
-        return array_merge([
-            'status_title' => $statusString,
-            'details' => $details,
-            'last_run_date' => $lastRunDate,
-            'target_season_year' => $targetSeasonForAction, // <-- Questa riga è già presente
-        ], $visualAttributes);
+        return $status;
     }
     
     private function getRosterStatus(): array
@@ -552,5 +561,48 @@ class DashboardController extends Controller
             return (int) $matches[1];
         }
         return null;
+    }
+    
+    /**
+     * Controlla lo stato delle squadre definite per la prossima stagione d'asta.
+     */
+    private function getAuctionTeamsStatus(): array
+    {
+        $nextAuctionSeasonStartYear = date('Y') + 1;
+        
+        $status = [
+            'status_title' => 'Non Definite',
+            'details' => "Le squadre per la Serie A {$nextAuctionSeasonStartYear}-" . substr($nextAuctionSeasonStartYear + 1, -2) . " non sono ancora state impostate.",
+            'badgeClass' => 'bg-danger',
+            'iconClass' => 'fas fa-times-circle text-danger',
+            'cardBorderClass' => 'border-danger',
+            'showAction' => true,
+            ];
+        
+        $activeTeamsCount = Team::where('serie_a_team', true)
+        ->where('season_year', $nextAuctionSeasonStartYear)
+        ->count();
+        
+        if ($activeTeamsCount >= 20) {
+            $status = [
+                'status_title' => 'Completato',
+                'details' => "Sono state definite {$activeTeamsCount} squadre per la prossima Serie A.",
+                'badgeClass' => 'bg-success',
+                'iconClass' => 'fas fa-check-circle text-success',
+                'cardBorderClass' => 'border-success',
+                'showAction' => false,
+                ];
+        } elseif ($activeTeamsCount > 0) {
+            $status = [
+                'status_title' => 'Parziale',
+                'details' => "Sono state definite solo {$activeTeamsCount} squadre su 20 per la prossima Serie A.",
+                'badgeClass' => 'bg-warning',
+                'iconClass' => 'fas fa-exclamation-triangle text-warning',
+                'cardBorderClass' => 'border-warning',
+                'showAction' => true,
+                ];
+        }
+        
+        return $status;
     }
 }

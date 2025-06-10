@@ -140,20 +140,28 @@ class TeamTieringService
         $metricWeights = $this->config['metric_weights'] ?? ['points' => 1.0];
         
         $targetStartYear = (int)substr($targetSeasonYear, 0, 4);
-        $historicalSeasonDbStrings = [];
-        for ($i = 0; $i < $lookbackSeasonsCount; $i++) {
-            $year = $targetStartYear - 1 - $i; // t-1, t-2, t-3...
-            $historicalSeasonDbStrings[] = $year . '-' . substr($year + 1, 2, 2);
+        
+        // --- INIZIO BLOCCO CORRETTO ---
+        $lookbackYears = [];
+        $lookbackSeasonsForLog = []; // Per un logging più chiaro
+        for ($i = 1; $i <= $lookbackSeasonsCount; $i++) {
+            $year = $targetStartYear - $i; // Crea [2024, 2023, 2022, ...]
+            $lookbackYears[] = $year;
+            $lookbackSeasonsForLog[] = $year . '-' . substr($year + 1, -2);
         }
         
+        // Convertiamo gli anni in stringhe per un matching sicuro con la colonna del DB
+        $lookbackYearsAsString = array_map('strval', $lookbackYears);
+        // --- FINE BLOCCO CORRETTO ---
+        
         $historicalStandings = TeamHistoricalStanding::where('team_id', $team->id)
-        ->whereIn('season_year', $historicalSeasonDbStrings)
-        ->orderBy('season_year', 'desc') // La più recente per prima, per allineare con i pesi
+        ->whereIn('season_year', $lookbackYearsAsString) // USA L'ARRAY DI STRINGHE CORRETTO
+        ->orderBy('season_year', 'desc')
         ->get();
         
         if ($historicalStandings->isEmpty()) {
-            Log::warning(self::class.": Nessun dato storico trovato per {$team->name} (ID: {$team->id}) nelle stagioni di lookback richieste (target {$targetSeasonYear} -> controllo: " . implode(', ', $historicalSeasonDbStrings) . "). Assegno punteggio grezzo per neopromossa/sconosciuta.");
-            return (float)($this->config['newly_promoted_raw_score_target'] ?? 25.0); // Da config
+            Log::warning(self::class.": Nessun dato storico trovato per {$team->name} (ID: {$team->id}) nelle stagioni di lookback richieste (target {$targetSeasonYear} -> controllo: " . implode(', ', $lookbackSeasonsForLog) . "). Assegno punteggio grezzo per neopromossa/sconosciuta.");
+            return (float)($this->config['newly_promoted_raw_score_target'] ?? 25.0);
         }
         
         if ($historicalStandings->count() < $lookbackSeasonsCount) {
@@ -163,35 +171,28 @@ class TeamTieringService
         $weightedSeasonMetricsSum = 0;
         $totalSeasonWeightApplied = 0;
         
-        // Adatta i pesi stagionali al numero effettivo di stagioni storiche trovate, mantenendo la priorità alle più recenti
         $applicableSeasonWeights = array_slice($seasonWeightsConfig, 0, $historicalStandings->count());
         $sumOfApplicableWeights = array_sum($applicableSeasonWeights);
-        if ($sumOfApplicableWeights > 0 && abs($sumOfApplicableWeights - 1.0) > 1e-9) { // Normalizza se non sommano a 1
+        if ($sumOfApplicableWeights > 0 && abs($sumOfApplicableWeights - 1.0) > 1e-9) {
             $applicableSeasonWeights = array_map(function($w) use ($sumOfApplicableWeights) {
                 return $w / $sumOfApplicableWeights;
             }, $applicableSeasonWeights);
         }
         
-        
         foreach ($historicalStandings as $index => $standing) {
-            // L'index qui è 0 per la più recente tra quelle trovate, 1 per la successiva, ecc.
-            // Questo corrisponde all'ordine di $applicableSeasonWeights
             if (!isset($applicableSeasonWeights[$index])) {
-                // Questo non dovrebbe succedere se $applicableSeasonWeights è derivato da $historicalStandings->count()
                 Log::error(self::class.": Errore logico: Peso stagione mancante per indice {$index} (stagione {$standing->season_year}) per team {$team->name}.");
                 continue;
             }
             $seasonWeight = $applicableSeasonWeights[$index];
-            $currentSeasonRawScore = 0; // FIX: Inizializzazione
+            $currentSeasonRawScore = 0;
             $totalMetricWeightUsedThisSeason = 0;
             
             foreach ($metricWeights as $metric => $metricWeight) {
                 if (isset($standing->{$metric}) && $standing->{$metric} !== null) {
                     $value = (float)$standing->{$metric};
                     if ($metric === 'position') {
-                        // Inversione e scaling semplice (1°=20, ..., 20°=1). Adattare il 21 se le leghe hanno #diverso di squadre
-                        // O meglio, normalizzare la posizione rispetto al min/max di quella lega/stagione
-                        $value = max(0, ( ($standing->league_name === 'Serie B' ? 21 : 21) - $value)); // Assumendo 20 squadre
+                        $value = max(0, ( ($standing->league_name === 'Serie B' ? 21 : 21) - $value));
                     }
                     $currentSeasonRawScore += $value * $metricWeight;
                     $totalMetricWeightUsedThisSeason += $metricWeight;
@@ -199,11 +200,8 @@ class TeamTieringService
             }
             
             if ($totalMetricWeightUsedThisSeason > 0) {
-                // Normalizza il punteggio della stagione se i pesi delle metriche non sommano a 1 (opzionale, ma buona pratica)
-                // $currentSeasonRawScore = $currentSeasonRawScore / $totalMetricWeightUsedThisSeason;
-                
                 $leagueStrengthMultipliers = $this->config['league_strength_multipliers'] ?? ['Serie A' => 1.0, 'Serie B' => 0.7];
-                $leagueMultiplier = $leagueStrengthMultipliers[$standing->league_name] ?? ($standing->league_name === 'Serie A' ? 1.0 : 0.6); // Fallback
+                $leagueMultiplier = $leagueStrengthMultipliers[$standing->league_name] ?? ($standing->league_name === 'Serie A' ? 1.0 : 0.6);
                 $seasonScoreAdjustedForLeague = $currentSeasonRawScore * $leagueMultiplier;
                 
                 Log::debug(self::class.": Team {$team->name}, Stag. {$standing->season_year} ({$standing->league_name}), P.Stag.Grezzo: {$currentSeasonRawScore}, MultiLega: {$leagueMultiplier}, P.Stag.Agg: {$seasonScoreAdjustedForLeague}, PesoStag: {$seasonWeight}");
@@ -215,7 +213,7 @@ class TeamTieringService
             }
         }
         
-        if ($totalSeasonWeightApplied == 0) { // Può succedere se non ci sono dati per le metriche in nessuna stagione
+        if ($totalSeasonWeightApplied == 0) {
             Log::warning(self::class.": Impossibile calcolare un punteggio finale pesato per {$team->name} (ID: {$team->id}). Nessun peso stagione applicato. Assegno punteggio neopromossa.");
             return (float)($this->config['newly_promoted_raw_score_target'] ?? 25.0);
         }

@@ -9,7 +9,7 @@ use App\Models\Team;
 use App\Models\ImportLog;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
-use Illuminate\Support\Facades\DB; // Per DB::raw
+use Illuminate\Support\Facades\DB;
 
 class TeamsScrapeStandings extends Command
 {
@@ -18,17 +18,20 @@ class TeamsScrapeStandings extends Command
      *
      * @var string
      */
+    // MODIFICA 1: Aggiunta opzione --league-code
     protected $signature = 'teams:scrape-standings
-                            {url : L\'URL completo della pagina della classifica su FBRef (es. https://fbref.com/it/comps/11/10728/2021-2022-Serie-B-Stats)}
+                            {url : L\'URL completo della pagina della classifica su FBRef}
                             {--season= : Anno di inizio della stagione (es. 2021 per 2021-22)}
-                            {--league= : Nome della lega (es. Serie A, Serie B)}';
+                            {--league= : Nome della lega (es. Serie A, Serie B)}
+                            {--league-code= : Codice della lega (es. SA, SB), obbligatorio se si creano team}
+                            {--create-missing-teams=false : Crea le squadre nel DB se non vengono trovate}';
     
     /**
      * The console command description.
      *
      * @var string
      */
-    protected $description = 'Esegue lo scraping di una classifica storica da un URL FBRef e salva i dati nel database.';
+    protected $description = 'Esegue lo scraping di una classifica storica da un URL FBRef e salva i dati nel database, creando opzionalmente i team mancanti.';
     
     protected LeagueStandingsScrapingService $scrapingService;
     
@@ -38,28 +41,42 @@ class TeamsScrapeStandings extends Command
         $this->scrapingService = $scrapingService;
     }
     
+    // MODIFICA 2: Metodo handle() intero e aggiornato
     public function handle(): int
     {
         $url = $this->argument('url');
         $seasonYear = $this->option('season');
         $leagueName = $this->option('league');
+        $leagueCode = $this->option('league-code'); // NUOVO: Recupera il league code
+        $createMissingTeams = filter_var($this->option('create-missing-teams'), FILTER_VALIDATE_BOOLEAN);
         
         if (empty($url) || empty($seasonYear) || empty($leagueName)) {
             $this->error("URL, stagione (--season) e nome della lega (--league) sono obbligatori.");
             return Command::FAILURE;
         }
         
+        // NUOVO: Validazione per il league-code quando si creano i team
+        if ($createMissingTeams && empty($leagueCode)) {
+            $this->error("L'opzione --league-code è obbligatoria quando --create-missing-teams è impostato a true.");
+            return Command::FAILURE;
+        }
+        
         $seasonDisplay = $seasonYear . '-' . substr($seasonYear + 1, 2);
-        $this->info("Avvio scraping classifica per lega {$leagueName}, stagione {$seasonDisplay} da URL: {$url}");
+        $this->info("Avvio scraping classifica per lega {$leagueName} ({$leagueCode}), stagione {$seasonDisplay} da URL: {$url}");
+        if ($createMissingTeams) {
+            $this->info("Modalità creazione team mancanti: ATTIVA.");
+        }
         
         $startTime = microtime(true);
         $recordsSaved = 0;
         $failedRecords = 0;
+        $createdTeamCount = 0;
         
         $this->scrapingService->setTargetUrl($url);
         $scrapedData = $this->scrapingService->scrapeStandings();
         
         if (isset($scrapedData['error'])) {
+            // ... gestione errore scraping (invariata)
             $errorMessage = "Errore durante lo scraping della classifica: " . $scrapedData['error'];
             $this->error($errorMessage);
             Log::error("TeamsScrapeStandings: " . $errorMessage);
@@ -74,6 +91,7 @@ class TeamsScrapeStandings extends Command
         
         $standings = $scrapedData['standings'] ?? [];
         if (empty($standings)) {
+            // ... gestione dati vuoti (invariata)
             $this->warn("Nessun dato di classifica trovato per lega {$leagueName}, stagione {$seasonDisplay} da URL: {$url}.");
             ImportLog::create([
                 'import_type' => 'standings_fbref_scrape',
@@ -92,31 +110,43 @@ class TeamsScrapeStandings extends Command
                 continue;
             }
             
-            $team = null;
-            $searchStrategy = '';
-            
-            // Normalizza il nome della squadra raschiata usando la funzione pulita
             $cleanedScrapedTeamName = $this->cleanTeamName($teamNameFromScrape);
             
-            // Ricerca la squadra nel DB usando short_name pulito o name pulito con LIKE
             $team = Team::where(DB::raw('REPLACE(LOWER(short_name), " ", "")'), 'LIKE', '%' . $cleanedScrapedTeamName . '%')
             ->orWhere(DB::raw('REPLACE(LOWER(name), " ", "")'), 'LIKE', '%' . $cleanedScrapedTeamName . '%')
             ->first();
             
-            if ($team) {
-                $searchStrategy = 'Cleaned ShortName/FullName LIKE Match';
-            }
-            
-            Log::debug("TeamsScrapeStandings: Ricerca team '{$teamNameFromScrape}' (pulito: {$cleanedScrapedTeamName}) in DB. Strategia: {$searchStrategy}. Risultato finale: " . ($team ? $team->name : 'Nessuno'));
-            
-            if (!$team) {
-                Log::warning("TeamsScrapeStandings: Squadra '{$teamNameFromScrape}' non trovata nel DB locale per salvare classifica storica (dopo tutti i tentativi di ricerca). Saltata.");
+            if (!$team && $createMissingTeams) {
+                $this->line("Squadra '{$teamNameFromScrape}' non trovata, la creo...");
+                try {
+                    // MODIFICATO: Aggiunti i nuovi campi durante la creazione
+                    $team = Team::create([
+                        'name'                   => $teamNameFromScrape,
+                        'short_name'             => $teamNameFromScrape, // Popolato con il nome completo
+                        'tla'                    => strtoupper(substr(preg_replace('/[^a-zA-Z]/', '', $teamNameFromScrape), 0, 3)), // Crea un TLA di default (es. Frosinone -> FRO)
+                        'crest_url'              => null, // Non abbiamo lo stemma da FBRef
+                        'serie_a_team'           => (strtoupper($leagueCode) === 'SA'),
+                        'tier'                   => null,
+                        'fanta_platform_id'      => null, // Non abbiamo questo ID da FBRef
+                        'api_football_data_id'   => null, // Non abbiamo questo ID da FBRef
+                        'league_code'            => strtoupper($leagueCode), // Popolato dal parametro
+                        'season_year'            => $seasonYear, // Popolato dal parametro
+                    ]);
+                    $this->info("-> Creata squadra '{$team->name}' con ID: {$team->id}");
+                    $createdTeamCount++;
+                } catch (\Exception $e) {
+                    $this->error("Errore durante la creazione della squadra '{$teamNameFromScrape}': " . $e->getMessage());
+                    $failedRecords++;
+                    continue;
+                }
+            } elseif (!$team) {
+                Log::warning("TeamsScrapeStandings: Squadra '{$teamNameFromScrape}' non trovata nel DB locale. Saltata (creazione disattivata).");
                 $failedRecords++;
                 continue;
             }
             
             try {
-                // Parsing dei valori numerici (resta invariato, era già corretto)
+                // Logica di salvataggio della classifica (invariata)
                 $parsedPosition = $this->parseInt($rankData['rank'] ?? null);
                 $parsedPoints = $this->parseInt($rankData['points'] ?? null);
                 $parsedGames = $this->parseInt($rankData['games'] ?? null);
@@ -126,8 +156,6 @@ class TeamsScrapeStandings extends Command
                 $parsedGoalsFor = $this->parseInt($rankData['goals_for'] ?? null);
                 $parsedGoalsAgainst = $this->parseInt($rankData['goals_against'] ?? null);
                 $parsedGoalDiff = $this->parseInt($rankData['goal_diff'] ?? null);
-                
-                // Rimosse le righe di debug per i valori raw e convertiti
                 
                 TeamHistoricalStanding::updateOrCreate(
                     [
@@ -150,14 +178,15 @@ class TeamsScrapeStandings extends Command
                     );
                 $recordsSaved++;
             } catch (\Exception $e) {
-                Log::error("TeamsScrapeStandings: Errore nel salvare classifica storica per {$teamNameFromScrape} (Stagione: {$seasonYear}, Lega: {$leagueName}): " . $e->getMessage());
+                Log::error("TeamsScrapeStandings: Errore nel salvare classifica storica per {$teamNameFromScrape}: " . $e->getMessage());
                 $failedRecords++;
             }
         }
         
+        // Riepilogo finale (invariato)
         $duration = microtime(true) - $startTime;
         $summary = "Scraping classifica completato per {$leagueName} {$seasonDisplay} in " . round($duration, 2) . " secondi. ";
-        $summary .= "Record salvati: {$recordsSaved}. Fallimenti: {$failedRecords}.";
+        $summary .= "Record salvati: {$recordsSaved}. Team creati: {$createdTeamCount}. Fallimenti/Saltati: {$failedRecords}.";
         
         $this->info($summary);
         Log::info($summary);
@@ -176,42 +205,47 @@ class TeamsScrapeStandings extends Command
     }
     
     /**
-     * Pulisce e normalizza un nome di squadra per il confronto, rendendolo minuscolo e senza spazi.
-     * Deve contenere solo lettere da a-z e numeri.
+     * Pulisce e normalizza un nome di squadra per il confronto,
+     * convertendo i caratteri accentati e rimuovendo gli spazi.
      *
      * @param string $name
      * @return string
      */
     private function cleanTeamName(string $name): string
     {
-        // Rimuovi caratteri non alfanumerici (tranne spazi) e poi tutti gli spazi
-        $cleaned = preg_replace('/[^a-zA-Z0-9\s]/', '', $name);
-        $cleaned = str_replace(' ', '', $cleaned);
+        // Metodo 1 (Preferito): Usa l'estensione PHP intl se disponibile
+        if (function_exists('transliterator_transliterate')) {
+            // Converte caratteri come 'ü' in 'u', 'é' in 'e', etc.
+            $name = transliterator_transliterate('Any-Latin; Latin-ASCII;', $name);
+        } else {
+            // Metodo 2 (Fallback): Usa una mappa di caratteri comuni
+            $accentMap = [
+                'á'=>'a', 'é'=>'e', 'í'=>'i', 'ó'=>'o', 'ú'=>'u', 'ü'=>'u', 'ñ'=>'n', 'ç'=>'c',
+                'ò'=>'o', 'à'=>'a', 'è'=>'e', 'ì'=>'i', 'ù'=>'u', 'š'=>'s', 'ž'=>'z'
+                // Aggiungi altri caratteri se necessario
+            ];
+            $name = strtr($name, $accentMap);
+        }
+        
+        // Rimuovi spazi e converte in minuscolo
+        $cleaned = str_replace(' ', '', $name);
         $cleaned = Str::lower($cleaned);
+        
+        // Rimuovi eventuali caratteri non alfanumerici rimanenti (più sicuro)
+        $cleaned = preg_replace('/[^a-z0-9]/', '', $cleaned);
+        
         return $cleaned;
     }
-    
-    /**
-     * Helper function to parse string to integer.
-     * Rimosso i log di debug interni.
-     *
-     * @param string|null $value
-     * @param string $fieldName Nome del campo per il debug (non più usato internamente).
-     * @return int|null
-     */
     private function parseInt(?string $value, string $fieldName = ''): ?int
     {
         if (is_null($value) || trim($value) === '') {
             return null;
         }
-        
         $value = str_replace(['.', ','], '', $value);
         $value = preg_replace('/[^0-9-]/', '', $value);
-        
         if (!is_numeric($value) || $value === '') {
             return null;
         }
-        
         return (int) $value;
     }
 }
