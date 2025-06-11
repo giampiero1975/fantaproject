@@ -77,8 +77,9 @@
                     'title_prefix' => '5.',
                     'title' => 'Calcolo Tier Squadre (per Proiezioni ' . $currentSeasonDisplay . ')',
                     'action_text' => 'Calcola i tier di forza delle squadre attive, usati nelle proiezioni.',
-                    'artisan_commands' => ["php artisan teams:update-tiers " . $currentSeasonDisplay],
-                    'artisan_tooltip' => "<strong>teams:update-tiers:</strong> Ricalcola i tier per la stagione specificata.<br>Args: <code>targetSeasonYear</code> (es. " . $currentSeasonDisplay .")."
+                    'show_action_override' => true,
+                    'artisan_commands' => ["php artisan teams:update-tiers --year=" . $currentSeasonStartYear],
+    				'artisan_tooltip' => "<strong>teams:update-tiers:</strong> Ricalcola i tier per la stagione specificata.<br>Opzioni: <code>--year=YYYY</code> (Default: anno corrente)."
                 ],
                 6 => [ // NUOVA FASE 6
             		'data' => $playersSyncStatus, // Variabile passata dal controller

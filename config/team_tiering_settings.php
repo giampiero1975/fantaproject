@@ -7,7 +7,10 @@ return [
     
     // Pesi da assegnare alle stagioni storiche (0: la più recente (t-1), 1: t-2, etc.)
     // La somma dei pesi dovrebbe idealmente essere 1, ma il servizio normalizzerà se non lo è.
-    'season_weights' => [0 => 0.4, 1 => 0.3, 2 => 0.2, 3 => 0.1],
+    // conservativo -> [0.30, 0.25, 0.25, 0.20]
+    // neutrale -> [0.25, 0.25, 0.25, 0.25]
+    // Premia la Forma Recente -> [0 => 0.4, 1 => 0.3, 2 => 0.2, 3 => 0.1]
+    'season_weights' => [0.30, 0.25, 0.25, 0.20],
 
     // Pesi per le diverse metriche usate per calcolare il "punteggio forza" di una squadra in una singola stagione
     // La somma dei pesi dovrebbe idealmente essere 1.
@@ -44,15 +47,6 @@ return [
     // La chiave è il Tier, il valore è il percentile INFERIORE del punteggio grezzo per quel tier.
     // Es. Tier 1: top X% (es. 80° percentile in su), Tier 2: successivo Y% (es. tra 60° e 80° percentile)
     // 'tier_thresholds_source' => 'config',
-    /*
-    'tier_percentiles_config' => [ // Percentile INFERIORE per quel tier
-        1 => 0.90, // Le squadre nel top 25% (punteggio >= 75° percentile) sono Tier 1
-        2 => 0.70, // Le squadre tra il 55° e il 75° percentile sono Tier 2
-        3 => 0.50, // Tra il 35° e il 55°
-        4 => 0.30, // Tra il 15° e il 35°
-        5 => 0.0,  // Sotto il 15° percentile
-    ],
-    */
     'tier_percentiles_config' => [
         1 => 0.90, 
         2 => 0.70,
@@ -77,7 +71,7 @@ return [
     
     'league_strength_multipliers' => [
         'Serie A' => 1.0,
-        'Serie B' => 0.65, // Esempio: una stagione in B vale il 70% di una in A a parità di metriche
+        'Serie B' => 0.45, // Esempio: una stagione in B vale il 70% di una in A a parità di metriche
         // Aggiungi altre leghe se necessario
     ],
 ];

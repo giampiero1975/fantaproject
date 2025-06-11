@@ -2,15 +2,28 @@
 
 namespace App\Console\Commands;
 
+use Illuminate\Console\Command;
 use App\Models\Player;
 use App\Services\DataEnrichmentService;
-use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 
 class EnrichPlayerDataCommand extends Command
 {
-    protected $signature = 'players:enrich-data {--player_id=all} {--player_name=} {--delay=6}';
-    protected $description = 'Enriches player data from Football-Data.org API';
+    /**
+     * The name and signature of the console command.
+     * --- AGGIUNTA OPZIONE --all ---
+     * @var string
+     */
+    protected $signature = 'players:enrich-data
+                            {--all : Arricchisci tutti i giocatori nel database invece dei soli giocatori di Serie A attivi}
+                            {--player_id= : Specifica l\'ID di un singolo giocatore da arricchire}';
+    
+    /**
+     * The console command description.
+     *
+     * @var string
+     */
+    protected $description = 'Arricchisce i dati dei giocatori (es. ID API, data di nascita) usando un servizio esterno.';
     
     protected DataEnrichmentService $enrichmentService;
     
@@ -22,70 +35,75 @@ class EnrichPlayerDataCommand extends Command
     
     public function handle()
     {
+        $enrichAll = $this->option('all');
         $playerId = $this->option('player_id');
-        $playerName = $this->option('player_name');
-        $delay = (int)$this->option('delay');
         
-        $query = Player::query();
-        
-        if ($playerName) {
-            $query->where('name', 'LIKE', "%{$playerName}%");
-            $this->info("Attempting to enrich player(s) with name like: {$playerName}");
-        } elseif ($playerId !== 'all') {
-            $query->where('id', $playerId);
-            $this->info("Attempting to enrich player with DB ID: {$playerId}");
+        if ($playerId) {
+            $player = Player::find($playerId);
+            if (!$player) {
+                $this->error("Giocatore con ID [{$playerId}] non trovato.");
+                return Command::FAILURE;
+            }
+            $playersToEnrich = collect([$player]);
+            $this->info("Arricchimento mirato per il giocatore: {$player->name} (ID: {$playerId})");
         } else {
-            $this->info("Attempting to enrich all players missing date_of_birth or api_football_data_id...");
-            // Solo quelli che necessitano di arricchimento
+            $this->info($enrichAll ? "Avvio arricchimento per TUTTI i giocatori..." : "Avvio arricchimento per i soli giocatori delle squadre di Serie A attive...");
+            
+            $query = Player::query();
+            
+            // --- NUOVA LOGICA DI FILTRAGGIO ---
+            if (!$enrichAll) {
+                // Di default, processa solo i giocatori delle squadre di Serie A
+                $query->whereHas('team', function ($q) {
+                    $q->where('serie_a_team', true);
+                });
+                    $this->comment("Modalità: Solo giocatori di Serie A. Usa --all per processarli tutti.");
+            }
+            
+            // In ogni caso, processa solo quelli a cui mancano dati
             $query->where(function ($q) {
-                $q->whereNull('date_of_birth')
-                ->orWhereNull('detailed_position')
-                ->orWhereNull('api_football_data_id');
+                $q->whereNull('api_football_data_id')
+                ->orWhereNull('date_of_birth');
             });
+                
+                $playersToEnrich = $query->get();
         }
         
-        $players = $query->get();
-        
-        if ($players->isEmpty()) {
-            $this->warn("No players found to enrich based on your criteria.");
-            return 0;
+        $total = $playersToEnrich->count();
+        if ($total === 0) {
+            $this->info("Nessun giocatore da arricchire secondo i criteri selezionati. Lavoro terminato.");
+            return Command::SUCCESS;
         }
         
-        $this->info("Found {$players->count()} player(s) to process.");
-        $bar = $this->output->createProgressBar($players->count());
-        $bar->start();
+        $this->info("Trovati {$total} giocatori da arricchire. Inizio processo...");
+        $progressBar = $this->output->createProgressBar($total);
+        $progressBar->start();
         
-        foreach ($players as $player) {
-            $this->info("\nProcessing player: {$player->name} (DB ID: {$player->id})");
-            if ($player->team_name == null && $player->team_id != null) { // Assicura team_name se possibile
-                $player->load('team'); // Carica la relazione se non già fatto
-                $player->team_name = $player->team?->name;
-            }
-            
-            if(empty($player->team_name)) {
-                $this->warn("Skipping {$player->name} due to missing team name, which is needed for API matching.");
-                Log::warning("DataEnrichmentCommand: Skipping {$player->name} (ID: {$player->id}) due to missing team name.");
-                $bar->advance();
-                if ($players->count() > 1 && $delay > 0) {
-                    sleep($delay); // Rispetta il rate limit anche se saltiamo
+        $successCount = 0;
+        $failCount = 0;
+        
+        foreach ($playersToEnrich as $player) {
+            try {
+                if ($this->enrichmentService->enrichPlayerFromApi($player)) {
+                    $successCount++;
+                } else {
+                    $failCount++;
                 }
-                continue;
+            } catch (\Exception $e) {
+                $this->error("Errore critico durante l'arricchimento del giocatore ID {$player->id}: " . $e->getMessage());
+                Log::error("Fallimento critico comando enrich-data", ['player_id' => $player->id, 'error' => $e->getMessage()]);
+                $failCount++;
             }
             
-            $success = $this->enrichmentService->enrichPlayerFromApi($player);
-            if ($success) {
-                $this->info("Successfully enriched data for: {$player->name}. Age: " . ($player->date_of_birth ? $player->date_of_birth->age : 'N/A'));
-            } else {
-                $this->warn("Failed to enrich data for: {$player->name}. Check logs.");
-            }
-            $bar->advance();
-            if ($players->count() > 1 && $delay > 0) { // Non dormire se è l'ultimo o delay è 0
-                if ($player !== $players->last()) sleep($delay);
-            }
+            // Pausa per rispettare i limiti dell'API
+            sleep(config('services.api_football.delay_between_requests', 6));
+            $progressBar->advance();
         }
         
-        $bar->finish();
-        $this->info("\nEnrichment process completed.");
-        return 0;
+        $progressBar->finish();
+        $this->info("\nArricchimento completato.");
+        $this->info("Successi: {$successCount}, Falliti/Saltati: {$failCount}.");
+        
+        return Command::SUCCESS;
     }
 }

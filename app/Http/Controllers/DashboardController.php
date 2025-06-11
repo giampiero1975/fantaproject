@@ -239,22 +239,31 @@ class DashboardController extends Controller
     
     private function getEnrichmentStatus(): array
     {
-        $totalPlayers = Player::count();
-        if ($totalPlayers === 0) {
-            return $this->getVisualAttributesForStatus('Non Applicabile', 'Nessun giocatore nel database.');
-        }
-        
-        $missingEnrichment = Player::whereNull('api_football_data_id')->count();
-        
-        $statusString = 'Da Completare';
-        $details = "{$missingEnrichment}/{$totalPlayers} giocatori necessitano di ID API.";
-        
-        if ($missingEnrichment === 0) {
-            $statusString = 'Completato';
-            $details = 'Tutti i giocatori sono arricchiti con ID API.';
-        }
-        
-        return $this->getVisualAttributesForStatus($statusString, $details);
+        // Creiamo una query di base per i soli giocatori di Serie A
+        $query = Player::whereHas('team', function ($q) {
+            $q->where('serie_a_team', true);
+        });
+            
+            // Usiamo la query per contare il totale dei giocatori di Serie A
+            $totalSerieAPlayers = $query->clone()->count();
+            
+            if ($totalSerieAPlayers === 0) {
+                return $this->getVisualAttributesForStatus('Non Applicabile', 'Nessun giocatore trovato per le squadre di Serie A attive.');
+            }
+            
+            // Dalla query dei giocatori di A, contiamo quanti hanno l'ID API mancante
+            $missingEnrichment = $query->clone()->whereNull('api_football_data_id')->count();
+            
+            $statusString = 'Da Completare';
+            // Il messaggio ora è molto più preciso
+            $details = "{$missingEnrichment} su {$totalSerieAPlayers} giocatori di Serie A necessitano di ID API.";
+            
+            if ($missingEnrichment === 0) {
+                $statusString = 'Completato';
+                $details = "Tutti i {$totalSerieAPlayers} giocatori di Serie A sono stati arricchiti con successo.";
+            }
+            
+            return $this->getVisualAttributesForStatus($statusString, $details);
     }
     
     private function getFbrefScrapingStatus(): array
