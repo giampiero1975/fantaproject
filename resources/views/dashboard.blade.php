@@ -97,35 +97,39 @@
                     'artisan_commands' => ["php artisan players:enrich-data"],
                     'artisan_tooltip' => "<strong>players:enrich-data:</strong> Arricchisce i dati dei giocatori da API esterna (football-data.org).<br>Opzioni:<br> - <code>--player_id=all|ID_DB</code> (Default: all).<br> - <code>--player_name=NOME</code>.<br> - <code>--delay=SECONDI</code> (Default: 6)."
                 ],
-                8 => [ // EX FASE 6
-                    'data' => $fbrefScrapingStatus,
-                    'title_prefix' => '8.',
-                    'title' => 'Scraping Dati FBRef Grezzi',
-                    'action_text' => 'Raschia le statistiche dettagliate da FBRef per squadre/stagioni di interesse.',
-                    'artisan_commands' => ["php artisan fbref:scrape-team \"URL_FBREF_SQUADRA\" --team_id=ID_SQUADRA_DB --season=YYYY --league=\"Nome Lega\""],
-                    'artisan_notes' => "Sostituisci i placeholder. Utile per dati storici dettagliati.",
-                    'artisan_tooltip' => "<strong>fbref:scrape-team:</strong> Scarica statistiche da una pagina squadra di FBRef.<br>Args: <code>url</code>.<br>Opzioni: <code>--team_id</code>, <code>--season</code>, <code>--league</code> (tutti obbligatori per un corretto salvataggio)."
-                ],
-                9 => [ // EX FASE 7
-                    'data' => $fbrefProcessingStatus,
-                    'title_prefix' => '9.',
-                    'title' => 'Processamento Dati FBRef -> Storico Elaborato',
-                    'action_text' => 'Trasforma i dati grezzi di FBRef in uno storico utilizzabile per le proiezioni.',
-                    'artisan_commands' => ["php artisan stats:process-fbref-to-historical --season=" . $lastCompletedSeasonStartYear ],
-                    'artisan_notes' => "Questo comando è DA IMPLEMENTARE. Processerà i dati FBRef.",
-                    'artisan_tooltip' => "<strong>stats:process-fbref-to-historical:</strong> (DA IMPLEMENTARE) Processa dati FBRef grezzi e li salva in 'historical_player_stats'.<br>Opzioni: <code>--season</code>, <code>--player_id</code>, <code>--overwrite</code>."
-                ],
-                10 => [ // EX FASE 8
+                8 => [ // EX FASE 8
                     'data' => $otherHistoricalStatsStatus,
-                    'title_prefix' => '10.',
+                    'title_prefix' => '8.',
                     'title' => 'Importazione Altre Statistiche Storiche',
                     'action_text' => 'Carica eventuali altri file di statistiche storiche (es. XLSX standard o CSV avanzati).',
+                    'route_name' => 'dashboard.player_history_coverage',
+                    'route_text' => 'Vedi Dettaglio Copertura Giocatori',
+                    'icon_action_route' => 'fa-search-plus',
+                    'show_action_override' => true,
                     'route_name' => 'historical_stats.show_upload_form',
                     'route_text' => 'Vai a Caricamento Statistiche (XLSX Standard)',
                     'icon_action_route' => 'fa-upload',
                     'artisan_commands' => ["php artisan players:import-advanced-stats path/to/your/advanced_stats.csv --league=\"Serie B\""],
                     'artisan_notes' => "Per file CSV/XLSX con colonna 'NomeLega', usa il comando Artisan.",
                     'artisan_tooltip' => "<strong>players:import-advanced-stats:</strong> Importa storico giocatori da file CSV/XLSX con lega specificata per stagione.<br>Args: <code>filepath</code>.<br>Opzioni: <code>--league</code> (fallback)."
+                ],
+                9 => [ // EX FASE 6
+                    'data' => $fbrefScrapingStatus,
+                    'title_prefix' => '9.',
+                    'title' => 'Scraping Dati FBRef Grezzi',
+                    'action_text' => 'Raschia le statistiche dettagliate da FBRef per squadre/stagioni di interesse.',
+                    'artisan_commands' => ["php artisan fbref:scrape-team \"URL_FBREF_SQUADRA\" --team_id=ID_SQUADRA_DB --season=YYYY --league=\"Nome Lega\""],
+                    'artisan_notes' => "Sostituisci i placeholder. Utile per dati storici dettagliati.",
+                    'artisan_tooltip' => "<strong>fbref:scrape-team:</strong> Scarica statistiche da una pagina squadra di FBRef.<br>Args: <code>url</code>.<br>Opzioni: <code>--team_id</code>, <code>--season</code>, <code>--league</code> (tutti obbligatori per un corretto salvataggio)."
+                ],
+                10 => [ // EX FASE 7
+                    'data' => $fbrefProcessingStatus,
+                    'title_prefix' => '10.',
+                    'title' => 'Processamento Dati FBRef -> Storico Elaborato',
+                    'action_text' => 'Trasforma i dati grezzi di FBRef in uno storico utilizzabile per le proiezioni.',
+                    'artisan_commands' => ["php artisan stats:process-fbref-to-historical --season=" . $lastCompletedSeasonStartYear ],
+                    'artisan_notes' => "Questo comando è DA IMPLEMENTARE. Processerà i dati FBRef.",
+                    'artisan_tooltip' => "<strong>stats:process-fbref-to-historical:</strong> (DA IMPLEMENTARE) Processa dati FBRef grezzi e li salva in 'historical_player_stats'.<br>Opzioni: <code>--season</code>, <code>--player_id</code>, <code>--overwrite</code>."
                 ],
                 11 => [ // EX FASE 9
                     'data' => $projectionsStatus,

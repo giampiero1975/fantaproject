@@ -289,11 +289,45 @@ class DashboardController extends Controller
     
     private function getOtherHistoricalStatsStatus(): array
     {
-        $count = HistoricalPlayerStat::count();
-        $statusString = $count > 0 ? 'Dati Presenti' : 'Non Importato';
-        $details = "Trovati {$count} record storici totali nel database.";
+        // Leggiamo dalla config quante stagioni storiche ci servono come minimo
+        $requiredSeasons = config('team_tiering_settings.lookback_seasons_for_tiering', 3);
         
-        return $this->getVisualAttributesForStatus($statusString, $details);
+        // Prendiamo solo i giocatori delle squadre di Serie A attive
+        $query = Player::whereHas('team', function ($q) {
+            $q->where('serie_a_team', true);
+        });
+            
+            $totalSerieAPlayers = $query->clone()->count();
+            
+            if ($totalSerieAPlayers === 0) {
+                return $this->getVisualAttributesForStatus('Non Applicabile', 'Nessun giocatore trovato per le squadre di Serie A.');
+            }
+            
+            // Contiamo quanti di loro hanno uno storico INSUFFICIENTE
+            // Usiamo withCount per contare i record relazionati in modo efficiente
+            $incompletePlayersCount = $query->clone()->withCount('historicalStats')
+            ->get()
+            ->filter(function ($player) use ($requiredSeasons) {
+                return $player->historical_stats_count < $requiredSeasons;
+            })
+            ->count();
+            
+            $statusString = 'Da Completare';
+            $details = "{$incompletePlayersCount} su {$totalSerieAPlayers} giocatori di Serie A hanno uno storico dati insufficiente (meno di {$requiredSeasons} stagioni).";
+            
+            if ($incompletePlayersCount === 0) {
+                $statusString = 'Completato';
+                $details = "Tutti i {$totalSerieAPlayers} giocatori di Serie A hanno uno storico dati sufficiente per le proiezioni.";
+            }
+            
+            $attributes = $this->getVisualAttributesForStatus($statusString, $details);
+            
+            // Mostriamo sempre l'azione se lo stato non è 'Completato'
+            if ($statusString !== 'Completato') {
+                $attributes['showAction'] = true;
+            }
+            
+            return $attributes;
     }
     
     private function getProjectionsStatus(): array
@@ -360,5 +394,110 @@ class DashboardController extends Controller
             'coverageData' => $coverageData,
             'requiredSeasons' => $requiredSeasons
         ]);
+    }
+    
+    public function showUploadForm()
+    {
+        // Recupera gli ultimi log di importazione per questa tipologia
+        $logs = ImportLog::where('import_type', 'like', 'historical_stats_%')
+        ->orWhere('import_type', 'statistiche_storiche')
+        ->latest()
+        ->take(10)
+        ->get();
+        
+        return view('uploads.historical_stats', ['logs' => $logs]);
+    }
+    
+    public function handleUpload(Request $request)
+    {
+        $request->validate([
+            'stats_file' => 'required|file|mimes:xlsx,csv',
+            'import_type' => 'required|string|in:tutti_historical_stats,player_season_stats',
+        ]);
+        
+        $file = $request->file('stats_file');
+        $importType = $request->input('import_type');
+        $originalFilename = $file->getClientOriginalName();
+        
+        $log = ImportLog::create([
+            'import_type' => $importType,
+            'status' => 'in_corso',
+            'original_file_name' => $originalFilename,
+            'details' => 'Avvio importazione sincrona.'
+        ]);
+        
+        try {
+            $this->info("Avvio importazione Sincrona per il file: " . $originalFilename);
+            
+            // Determina quale classe di import usare
+            $importer = null;
+            if ($importType === 'tutti_historical_stats') {
+                $importer = new TuttiHistoricalStatsImport();
+            } elseif ($importType === 'player_season_stats') {
+                $importer = new PlayerSeasonStatsImport();
+            }
+            
+            // Esegui l'importazione direttamente
+            Excel::import($importer, $file);
+            
+            // Se arriva qui, l'import è andato a buon fine
+            $log->update(['status' => 'successo', 'details' => 'Importazione completata con successo.']);
+            
+            return redirect()->back()->with('success', "File '{$originalFilename}' importato con successo!");
+            
+        } catch (\Maatwebsite\Excel\Validators\ValidationException $e) {
+            $failures = $e->failures();
+            $errorDetails = "Errori di validazione: ";
+            foreach ($failures as $failure) {
+                $errorDetails .= "Riga {$failure->row()}: {$failure->errors()[0]}. ";
+            }
+            $log->update(['status' => 'fallito', 'details' => $errorDetails]);
+            Log::error("Errore di validazione durante l'importazione del file {$originalFilename}", ['failures' => $failures]);
+            return redirect()->back()->with('error', 'Si sono verificati errori di validazione. Controlla i log.');
+            
+        } catch (\Exception $e) {
+            $log->update(['status' => 'fallito', 'details' => $e->getMessage()]);
+            Log::error("Errore durante l'importazione Sincrona del file {$originalFilename}: " . $e->getMessage());
+            return redirect()->back()->with('error', 'Si è verificato un errore imprevisto. Controlla i log.');
+        }
+    }
+    
+    // Aggiungo questo metodo helper per loggare in console se necessario
+    private function info($message)
+    {
+        if (app()->runningInConsole()) {
+            $this->info($message);
+        }
+    }
+    
+    public function showPlayerHistoryCoverage()
+    {
+        $lookbackSeasons = config('team_tiering_settings.lookback_seasons_for_tiering', 3);
+        $startYear = date('m') >= 7 ? (int)date('Y') - 1 : (int)date('Y') - 2;
+        $requiredSeasons = range($startYear, $startYear - $lookbackSeasons + 1);
+        
+        // Recupera solo i giocatori di Serie A e le loro stats in modo efficiente
+        $activePlayers = \App\Models\Player::with(['team', 'historicalStats'])
+        ->whereHas('team', function ($q) {
+            $q->where('serie_a_team', true);
+        })
+        ->get();
+        
+        $coverageData = $activePlayers->map(function ($player) use ($requiredSeasons) {
+            $availableSeasons = $player->historicalStats->pluck('season_year')->all();
+            $missingSeasons = array_diff($requiredSeasons, $availableSeasons);
+            
+            return (object)[
+                'player_name' => $player->name,
+                'team_name' => $player->team->short_name ?? $player->team->name,
+                'available_seasons' => $availableSeasons,
+                'is_complete' => empty($missingSeasons),
+            ];
+        });
+            
+            return view('dashboard.player_history_coverage', [
+                'coverageData' => $coverageData,
+                'requiredSeasons' => $requiredSeasons
+            ]);
     }
 }

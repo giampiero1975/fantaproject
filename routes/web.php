@@ -27,7 +27,7 @@ Route::post('/upload/roster', [RosterImportController::class, 'handleUpload'])->
 
 // Rotte per l'importazione delle Statistiche Storiche
 Route::get('/upload/historical-stats', [HistoricalStatsImportController::class, 'showImportForm'])->name('historical_stats.show_upload_form');
-Route::post('/upload/historical-stats', [HistoricalStatsImportController::class, 'handleUpload'])->name('historical_stats.handle_upload');
+Route::post('/upload/historical-stats', [HistoricalStatsImportController::class, 'import'])->name('historical_stats.handle_upload');
 
 // Rotte per la gestione del profilo lega
 Route::get('/league/profile', [UserLeagueProfileController::class, 'edit'])->name('league.profile.edit');
@@ -37,3 +37,4 @@ Route::post('/league/profile', [UserLeagueProfileController::class, 'update'])->
 Route::get('/projections', [PlayerProjectionController::class, 'index'])->name('projections.index');
 
 Route::get('/dashboard/historical-coverage', [DashboardController::class, 'showHistoricalCoverage'])->name('dashboard.historical_coverage');
+Route::get('/dashboard/player-history-coverage', [DashboardController::class, 'showPlayerHistoryCoverage'])->name('dashboard.player_history_coverage');
