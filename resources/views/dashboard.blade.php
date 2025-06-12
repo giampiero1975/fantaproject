@@ -102,13 +102,20 @@
                     'title_prefix' => '8.',
                     'title' => 'Importazione Altre Statistiche Storiche',
                     'action_text' => 'Carica eventuali altri file di statistiche storiche (es. XLSX standard o CSV avanzati).',
-                    'route_name' => 'dashboard.player_history_coverage',
-                    'route_text' => 'Vedi Dettaglio Copertura Giocatori',
-                    'icon_action_route' => 'fa-search-plus',
-                    'show_action_override' => true,
-                    'route_name' => 'historical_stats.show_upload_form',
-                    'route_text' => 'Vai a Caricamento Statistiche (XLSX Standard)',
-                    'icon_action_route' => 'fa-upload',
+                    'buttons' => [
+                        [
+                            'route_name' => 'historical_stats.show_upload_form',
+                            'route_text' => 'Vai a Caricamento Statistiche (XLSX Standard)',
+                            'icon'       => 'fa-upload',
+                            'class'      => 'btn-primary'
+                        ],
+                        [
+                            'route_name' => 'dashboard.player_history_coverage',
+                            'route_text' => 'Vedi Dettaglio Copertura Giocatori',
+                            'icon'       => 'fa-search-plus',
+                            'class'      => 'btn-secondary'
+                        ]
+                    ],
                     'artisan_commands' => ["php artisan players:import-advanced-stats path/to/your/advanced_stats.csv --league=\"Serie B\""],
                     'artisan_notes' => "Per file CSV/XLSX con colonna 'NomeLega', usa il comando Artisan.",
                     'artisan_tooltip' => "<strong>players:import-advanced-stats:</strong> Importa storico giocatori da file CSV/XLSX con lega specificata per stagione.<br>Args: <code>filepath</code>.<br>Opzioni: <code>--league</code> (fallback)."
@@ -161,10 +168,8 @@
                 // Logiche specifiche per sovrascrivere $showActionCard
                 if ($phaseNumber == 6) { // Arricchimento Dati Giocatori (Nuova numerazione)
                      $showActionCard = (($phase['data']['missing_count'] ?? 0) > 0 && (\App\Models\Player::count() > 0) );
-                } elseif ($phaseNumber == 8) { // Processamento Dati FBRef (Nuova numerazione)
-                    $showActionCard = (\App\Models\PlayerFbrefStat::count() > 0) &&
-                                      isset($phase['data']['status_title']) &&
-                                      !in_array($phase['data']['status_title'], ['Processato', 'Processato Completamente', 'Non applicabile']);
+                } elseif ($phaseNumber == 8) { 
+                    // $showActionCard = (\App\Models\PlayerFbrefStat::count() > 0) && isset($phase['data']['status_title']) && in_array($phase['data']['status_title'], ['Processato', 'Processato Completamente', 'Non applicabile']);
                 } elseif ($phaseNumber == 10) { // Generazione Proiezioni (Nuova numerazione)
                     $showActionCard = isset($phase['data']['status_title']) &&
                                       $phase['data']['status_title'] !== 'Generate' &&
@@ -204,11 +209,21 @@
                             <div class="action-suggestion mt-2 pt-2 {{ (isset($phase['data']['last_import_date']) && $phase['data']['last_import_date'] !== 'N/A') || (isset($phase['data']['last_run_date']) && $phase['data']['last_run_date'] !== 'N/A') || (isset($phase['data']['last_scrape_date']) && $phase['data']['last_scrape_date'] !== 'N/A') || (isset($phase['data']['details']) && !empty($phase['data']['details'])) ? 'border-top' : '' }}">
                                 <p class="mb-1"><strong>Azione Suggerita:</strong></p>
                                 <p>{{ $phase['action_text'] }}</p>
-                                @if(isset($phase['route_name']))
-                                    <a href="{{ route($phase['route_name']) }}" class="btn btn-primary btn-sm">
-                                        <i class="fas {{ $phase['icon_action_route'] ?? 'fa-arrow-right' }} me-1"></i> {{ $phase['route_text'] }}
-                                    </a>
-                                @endif
+                                
+                                @if(isset($phase['buttons']) && is_array($phase['buttons']))
+                                    {{-- Se trova la chiave 'buttons', cicla e disegna tutti i pulsanti che contiene (per la Fase 8) --}}
+                                    @foreach($phase['buttons'] as $button)
+                                        <a href="{{ route($button['route_name']) }}" class="btn {{ $button['class'] ?? 'btn-primary' }} btn-sm mb-1">
+                                            <i class="fas {{ $button['icon'] }} me-1"></i> {{ $button['route_text'] }}
+                                        </a>
+                                    @endforeach
+                                    @elseif(isset($phase['route_name']))
+                                        {{-- Altrimenti, usa la vecchia struttura per tutte le altre fasi (come la Fase 2) --}}
+                                        <a href="{{ route($phase['route_name']) }}" class="btn btn-primary btn-sm">
+                                            <i class="fas {{ $phase['icon_action_route'] ?? 'fa-arrow-right' }} me-1"></i> {{ $phase['route_text'] }}
+                                        </a>
+								@endif
+                                
                                 @if(isset($phase['artisan_commands']))
                                     <button type="button" class="btn btn-outline-info btn-sm" data-bs-toggle="collapse" data-bs-target="#artisanCollapse{{$phaseNumber}}">
                                         <i class="fas fa-terminal me-1"></i> Comandi Artisan
