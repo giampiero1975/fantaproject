@@ -10,6 +10,7 @@ class HistoricalPlayerStat extends Model
     use HasFactory;
     
     protected $fillable = [
+        'player_id',
         'player_fanta_platform_id',
         'season_year',
         'team_id',
