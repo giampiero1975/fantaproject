@@ -1,39 +1,52 @@
 <?php
 
 namespace App\Imports;
-use Illuminate\Support\Facades\Log;
-use Maatwebsite\Excel\Concerns\WithMultipleSheets;
-use Maatwebsite\Excel\Concerns\SkipsUnknownSheets; // Aggiunto per ignorare altri fogli
 
-class HistoricalStatsFileImport implements WithMultipleSheets, SkipsUnknownSheets
+// ASSICURATI DI IMPORTARE QUESTE CLASSI
+use Maatwebsite\Excel\Concerns\WithMultipleSheets;
+use Illuminate\Support\Facades\Log;
+
+class HistoricalStatsFileImport implements WithMultipleSheets
 {
-    private string $seasonForImport;
-    private TuttiHistoricalStatsImport $tuttiSheetImporter; // Proprietà per tenere l'istanza
+    protected $season;
+    protected $leagueName;
     
-    public function __construct(string $seasonYear)
+    public function __construct(int $season, string $leagueName)
     {
-        $this->seasonForImport = $seasonYear;
-        // Istanzia l'importer del foglio qui
-        $this->tuttiSheetImporter = new TuttiHistoricalStatsImport($this->seasonForImport);
+        //dd('STO USANDO IL CONTENITORE CORRETTO: HistoricalStatsFileImport');
+        $this->season = $season;
+        $this->leagueName = $leagueName;
     }
     
+    /**
+     * @return array
+     */
     public function sheets(): array
     {
-        return [
-            // La chiave 'Tutti' deve corrispondere al nome del foglio
-            'Tutti' => $this->tuttiSheetImporter, // Usa l'istanza
+        // QUESTA FUNZIONE È IL CUORE DI TUTTO.
+        // Dice a Laravel-Excel di usare la nostra classe personalizzata
+        // (con la logica ToCollection e WithStartRow) per ogni foglio.
+        $sheets = [
+            // Usa gli indici dei fogli (a partire da 0)
+            // questo è più robusto dei nomi che possono cambiare.
+            0 => new TuttiHistoricalStatsImport($this->season, $this->leagueName), // Primo foglio
+            1 => new TuttiHistoricalStatsImport($this->season, $this->leagueName), // Secondo foglio
+            2 => new TuttiHistoricalStatsImport($this->season, $this->leagueName), // Terzo foglio
+            3 => new TuttiHistoricalStatsImport($this->season, $this->leagueName), // Quarto foglio
         ];
-    }
-    
-    // Metodo per recuperare l'istanza dell'importer del foglio
-    public function getTuttiSheetImporter(): TuttiHistoricalStatsImport
-    {
-        return $this->tuttiSheetImporter;
-    }
-    
-    public function onUnknownSheet($sheetName)
-    {
-        // Logga o ignora i fogli non denominati "Tutti"
-        Log::info("HistoricalStatsFileImport: Foglio sconosciuto '$sheetName' ignorato.");
+        
+        // Se preferisci usare i nomi esatti dei fogli
+        /*
+         $sheets = [
+         'Tutti P' => new TuttiHistoricalStatsImport($this->season, $this->leagueName),
+         'Tutti D' => new TuttiHistoricalStatsImport($this->season, $this->leagueName),
+         'Tutti C' => new TuttiHistoricalStatsImport($this->season, $this->leagueName),
+         'Tutti A' => new TuttiHistoricalStatsImport($this->season, $this->leagueName),
+         ];
+         */
+        
+        Log::info("HistoricalStatsFileImport delegating to sheet-specific imports.", ['sheets' => array_keys($sheets)]);
+        
+        return $sheets;
     }
 }

@@ -3,64 +3,57 @@
 namespace App\Traits;
 
 use App\Models\Team;
-use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Log;
 
 trait FindsTeam
 {
-    /**
-     * La collection di tutte le squadre, caricata una sola volta per efficienza.
-     * @var Collection
-     */
-    protected Collection $allTeams;
+    private array $teamNameIdMap = [];
+    private array $teamShortNameIdMap = [];
     
     /**
-     * Carica e memorizza la collection di tutte le squadre.
+     * Carica le mappe dei nomi dei team per ricerche veloci su corrispondenze esatte.
      */
-    protected function preloadTeams(): void
+    public function preloadTeams()
     {
-        $this->allTeams = Team::all(['id', 'name', 'short_name']);
+        $teams = Team::all(['id', 'name', 'short_name']);
+        $this->teamNameIdMap = $teams->pluck('id', 'name')->toArray();
+        $this->teamShortNameIdMap = $teams->pluck('id', 'short_name')->toArray();
     }
     
     /**
-     * Cerca un team usando diverse strategie di matching.
+     * Trova l'ID di un team con una logica a più livelli:
+     * 1. Corrispondenza esatta (veloce, da mappa precaricata).
+     * 2. Corrispondenza "Contains" (super flessibile, da DB).
      *
-     * @param string $nameInStats Il nome della squadra dallo storico.
-     * @return int|null L'ID del team trovato, o null.
+     * @param string|null $name Il nome del team dal file di import.
+     * @return int|null
      */
-    protected function findTeamIdByName(string $nameInStats): ?int
+    public function findTeamIdByName(?string $name): ?int
     {
-        if (empty($this->allTeams)) {
-            $this->preloadTeams();
+        if ($name === null || trim($name) === '') {
+            return null;
         }
         
-        // Strategia 1: Match esatto sul nome breve (short_name)
-        $team = $this->allTeams->firstWhere('short_name', $nameInStats);
+        $trimmedName = trim($name);
+        
+        // Livello 1: Ricerca per corrispondenza esatta (veloce)
+        if (isset($this->teamNameIdMap[$trimmedName])) {
+            return $this->teamNameIdMap[$trimmedName];
+        }
+        if (isset($this->teamShortNameIdMap[$trimmedName])) {
+            return $this->teamShortNameIdMap[$trimmedName];
+        }
+        
+        // --- Livello 2: Ricerca "CONTAINS" (la più flessibile) ---
+        // Questo troverà "AC Pisa 1909" quando il file riporta "Pisa".
+        $team = Team::where('name', 'LIKE', '%' . $trimmedName . '%')
+        ->orWhere('short_name', 'LIKE', '%' . $trimmedName . '%')
+        ->first();
+        
         if ($team) {
             return $team->id;
         }
         
-        // Strategia 2: Match esatto sul nome completo (name)
-        $team = $this->allTeams->firstWhere('name', $nameInStats);
-        if ($team) {
-            return $team->id;
-        }
-        
-        // Strategia 3: Match non sensibile a maiuscole/minuscole (case-insensitive) sul nome breve
-        $team = $this->allTeams->first(function ($team) use ($nameInStats) {
-            return strcasecmp($team->short_name, $nameInStats) === 0;
-        });
-            if ($team) {
-                return $team->id;
-            }
-            
-            // Strategia 4: Match non sensibile a maiuscole/minuscole sul nome completo
-            $team = $this->allTeams->first(function ($team) use ($nameInStats) {
-                return strcasecmp($team->name, $nameInStats) === 0;
-            });
-                if ($team) {
-                    return $team->id;
-                }
-                
-                return null;
+        return null;
     }
 }

@@ -1,67 +1,62 @@
 @extends('layouts.app')
 
-@section('title', 'Copertura Storico Squadre')
-
 @section('content')
-<div class="container mt-4">
-    <div class="d-flex justify-content-between align-items-center mb-4">
-        <div>
-            <h1 class="display-6">Copertura Storico Squadre</h1>
-            <p class="lead">
-                Verifica della presenza dei dati storici per le squadre di Serie A. Il sistema richiede le ultime <strong>{{ count($requiredSeasons) }}</strong> stagioni.
-            </p>
+<div class="container">
+    <div class="card">
+        <div class="card-header">
+            <h1>Copertura Statistiche Storiche per Squadra (Serie A)</h1>
         </div>
-        <a href="{{ route('dashboard') }}" class="btn btn-secondary">
-            <i class="fas fa-arrow-left me-1"></i> Torna alla Dashboard
-        </a>
-    </div>
-
-    <div class="card shadow-sm">
         <div class="card-body">
-            <div class="table-responsive">
-                <table class="table table-hover align-middle">
-                    <thead class="table-light">
+            @if (empty($targetSeasons))
+                <div class="alert alert-warning">
+                    Nessuna stagione definita nel file di configurazione `projection_settings.php`.
+                </div>
+            @else
+                <table class="table table-striped table-hover">
+                    <thead class="thead-dark">
                         <tr>
-                            <th class="text-start ps-3">Squadra</th>
-                            {{-- Le colonne delle stagioni vengono generate dinamicamente --}}
-                            @foreach($requiredSeasons as $season)
-                                <th class="text-center">{{ $season }}-{{ substr($season + 1, -2) }}</th>
+                            <th>Squadra</th>
+                            {{-- Usa la variabile $targetSeasons per creare le intestazioni --}}
+                            @foreach ($targetSeasons as $season)
+                                <th class="text-center">{{ $season }}-{{ $season + 1 }}</th>
                             @endforeach
-                            <th class="text-center">Stato</th>
+                            <th class="text-center">Stato Copertura</th>
                         </tr>
                     </thead>
                     <tbody>
-                        @forelse($coverageData as $data)
+                        {{-- Usa la variabile $coverageData per il corpo della tabella --}}
+                        @forelse ($coverageData as $teamData)
                             <tr>
-                                <td class="fw-bold ps-3">{{ $data['team_name'] }}</td>
-                                {{-- Per ogni stagione richiesta, mettiamo la spunta verde o la croce rossa --}}
-                                @foreach($requiredSeasons as $season)
+                                <td>{{ $teamData['team_name'] }}</td>
+                                
+                                {{-- Itera sulle stagioni nell'ordine corretto --}}
+                                @foreach ($targetSeasons as $season)
                                     <td class="text-center">
-                                        @if(in_array($season, $data['available_seasons']))
-                                            <i class="fas fa-check-circle text-success fs-5" title="Dato Presente"></i>
+                                        {{-- Controlla la copertura per la stagione specifica --}}
+                                        @if (isset($teamData['coverage'][$season]) && $teamData['coverage'][$season])
+                                            <i class="fas fa-check-circle text-success" title="Presente"></i>
                                         @else
-                                            <i class="fas fa-times-circle text-danger fs-5" title="Dato Mancante"></i>
+                                            <i class="fas fa-times-circle text-danger" title="Mancante"></i>
                                         @endif
                                     </td>
                                 @endforeach
+
                                 <td class="text-center">
-                                    @if($data['is_complete'])
-                                        <span class="badge bg-success">Completo</span>
+                                    @if ($teamData['is_fully_covered'])
+                                        <span class="badge bg-success">Completa</span>
                                     @else
-                                        <span class="badge bg-warning text-dark">Incompleto</span>
+                                        <span class="badge bg-warning text-dark">Incompleta</span>
                                     @endif
                                 </td>
                             </tr>
                         @empty
                             <tr>
-                                <td colspan="{{ count($requiredSeasons) + 2 }}" class="text-center text-muted py-4">
-                                    Nessuna squadra di Serie A attiva trovata.
-                                </td>
+                                <td colspan="{{ count($targetSeasons) + 2 }}" class="text-center">Nessuna squadra di Serie A trovata.</td>
                             </tr>
                         @endforelse
                     </tbody>
                 </table>
-            </div>
+            @endif
         </div>
     </div>
 </div>

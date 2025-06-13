@@ -14,6 +14,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\View\View;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Config;
 
 class DashboardController extends Controller
 {
@@ -470,39 +471,51 @@ class DashboardController extends Controller
         }
     }
     
-    public function showPlayerHistoryCoverage()
+    public function showPlayerHistoryCoverage(): View
     {
-        // Legge dalla configurazione quante stagioni guardare indietro
-        $lookbackSeasons = config('team_tiering_settings.lookback_seasons_for_tiering', 3);
+        // 1. CORREZIONE: Calcola dinamicamente le stagioni target
+        // Prende l'anno di inizio stagione corrente (es. 2025 per la stagione 2025-26)
+        $currentSeasonStartYear = date('Y');
         
-        // Calcola dinamicamente gli anni delle stagioni richieste
-        $lastCompletedSeason = date('m') >= 7 ? (int)date('Y') : (int)date('Y') - 1;
-        $requiredYears = range($lastCompletedSeason - $lookbackSeasons + 1, $lastCompletedSeason);
-        rsort($requiredYears); // Ordina dall'anno più recente al più vecchio
+        // Legge il numero di stagioni passate da controllare dalla configurazione
+        $lookbackYears = Config::get('team_tiering_settings.lookback_seasons_for_tiering', 3); // Default a 3 se non trovato
         
-        // Recupera le squadre di Serie A attive
-        $activeTeams = Team::where('serie_a_team', true)->orderBy('name')->get();
+        // Genera l'array delle stagioni (es. se oggi siamo nel 2025 e lookback è 3, genera [2024, 2023, 2022])
+        $targetSeasons = [];
+        for ($i = 1; $i <= $lookbackYears; $i++) {
+            $targetSeasons[] = $currentSeasonStartYear - $i;
+        }
         
+        // 2. Seleziona le squadre di Serie A usando la colonna corretta
+        $teams = Team::where('serie_a_team', 1)->orderBy('name')->get();
+        
+        // 3. Logica per calcolare la copertura (questa è già corretta)
         $coverageData = [];
-        foreach ($activeTeams as $team) {
-            // Per ogni squadra, controlliamo quali anni sono presenti nel suo storico classifiche
-            // Questo popola la tabella come da immagine
-            $availableYears = TeamHistoricalStanding::where('team_id', $team->id)
-            ->whereIn('season_year', $requiredYears)
-            ->pluck('season_year')
-            ->all();
+        foreach ($teams as $team) {
+            $coverage = [];
+            $seasonsCoveredCount = 0;
+            
+            foreach ($targetSeasons as $season) {
+                $isCovered = HistoricalPlayerStat::where('team_id', $team->id)
+                ->where('season_year', $season)
+                ->exists();
+                $coverage[$season] = $isCovered;
+                if ($isCovered) {
+                    $seasonsCoveredCount++;
+                }
+            }
             
             $coverageData[] = [
                 'team_name' => $team->name,
-                'available_seasons' => $availableYears,
-                'is_complete' => count(array_diff($requiredYears, $availableYears)) === 0,
+                'coverage' => $coverage,
+                'is_fully_covered' => (count($targetSeasons) > 0 && $seasonsCoveredCount === count($targetSeasons)),
             ];
         }
         
-        // Importante: usiamo la view 'player_history_coverage' ma le passiamo i dati delle squadre
+        // 4. Passa i dati alla vista (questa è già corretta)
         return view('dashboard.player_history_coverage', [
-            'coverageData' => $coverageData,
-            'requiredSeasons' => $requiredYears
+            'coverageData'  => $coverageData,
+            'targetSeasons' => $targetSeasons,
         ]);
     }
 }
