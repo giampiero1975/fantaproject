@@ -59,7 +59,7 @@ class ScrapeFbrefTeamStatsCommand extends Command
         $leagueNameOption = $this->option('league');
         
         if (!$seasonYear || !is_numeric($seasonYear)) {
-            $this->error("L'anno della stagione (--season) è obbligatorio e deve essere un numero valido (es. 2024).");
+            $this->error("L'anno della stagione (--season) ï¿½ obbligatorio e deve essere un numero valido (es. 2024).");
             return Command::FAILURE;
         }
         
@@ -118,7 +118,7 @@ class ScrapeFbrefTeamStatsCommand extends Command
                 }
                 $leagueName = $leagueName ?? 'Unknown League';
                 if ($leagueName === 'Unknown League') {
-                    $this->warn("Nome lega non specificato (--league) e non rilevato dalla tabella. Verrà usato '{$leagueName}'.");
+                    $this->warn("Nome lega non specificato (--league) e non rilevato dalla tabella. Verrï¿½ usato '{$leagueName}'.");
                 } else {
                     $this->line("Nome lega determinato da tableKey: {$leagueName}.");
                 }
@@ -128,14 +128,14 @@ class ScrapeFbrefTeamStatsCommand extends Command
                 $playerName = $playerStatRow['Giocatore'] ?? null;
                 $fbrefPlayerRoleString = $playerStatRow['Ruolo'] ?? null;
                 
-                // --- MODIFICA QUI PER LEGGERE 'Età' IN MODO ROBUSTO ---
+                // --- MODIFICA QUI PER LEGGERE 'Etï¿½' IN MODO ROBUSTO ---
                 $fbrefAgeString = null;
-                // Prova prima la chiave "Età" con l'accento grave
-                if (isset($playerStatRow['Età'])) {
-                    $fbrefAgeString = $playerStatRow['Età'];
+                // Prova prima la chiave "Etï¿½" con l'accento grave
+                if (isset($playerStatRow['Etï¿½'])) {
+                    $fbrefAgeString = $playerStatRow['Etï¿½'];
                 }
                 // Se non trovata, prova la sua versione unicode se il parsing l'ha trasformata
-                elseif (isset($playerStatRow["Et\u{00e0}"])) { // Età con accento grave codificato in UTF-8
+                elseif (isset($playerStatRow["Et\u{00e0}"])) { // Etï¿½ con accento grave codificato in UTF-8
                     $fbrefAgeString = $playerStatRow["Et\u{00e0}"];
                 }
                 // Prova anche una versione senza accento, se per qualche ragione la fonte lo varia
@@ -145,11 +145,11 @@ class ScrapeFbrefTeamStatsCommand extends Command
                 // --- FINE MODIFICA ---
                 
                 // --- DEBUG AGGIUNTI (MANTENUTI) ---
-                Log::debug("DEBUG_ETÀ: Player: {$playerName}");
-                Log::debug("DEBUG_ETÀ:   - playerStatRow keys: " . json_encode(array_keys($playerStatRow)));
-                Log::debug("DEBUG_ETÀ:   - raw 'Età' value (from playerStatRow['Età']): " . ($playerStatRow['Età'] ?? 'KEY_MISSING_RAW'));
-                Log::debug("DEBUG_ETÀ:   - raw 'Et\u{00e0}' value (from playerStatRow[\"Et\\u{00e0}\"]): " . ($playerStatRow["Et\u{00e0}"] ?? 'KEY_MISSING_UNICODE'));
-                Log::debug("DEBUG_ETÀ:   - \$fbrefAgeString value (after logic): " . ($fbrefAgeString ?? 'NULL_VAR_FINAL'));
+                Log::debug("DEBUG_ETï¿½: Player: {$playerName}");
+                Log::debug("DEBUG_ETï¿½:   - playerStatRow keys: " . json_encode(array_keys($playerStatRow)));
+                Log::debug("DEBUG_ETï¿½:   - raw 'Etï¿½' value (from playerStatRow['Etï¿½']): " . ($playerStatRow['Etï¿½'] ?? 'KEY_MISSING_RAW'));
+                Log::debug("DEBUG_ETï¿½:   - raw 'Et\u{00e0}' value (from playerStatRow[\"Et\\u{00e0}\"]): " . ($playerStatRow["Et\u{00e0}"] ?? 'KEY_MISSING_UNICODE'));
+                Log::debug("DEBUG_ETï¿½:   - \$fbrefAgeString value (after logic): " . ($fbrefAgeString ?? 'NULL_VAR_FINAL'));
                 // --- FINE DEBUG AGGIUNTI ---
                 
                 if (!$playerName) {
@@ -172,7 +172,7 @@ class ScrapeFbrefTeamStatsCommand extends Command
                         'team_name' => $team->name,
                         'role' => $fantaRole,
                         'initial_quotation' => 0,
-                        'date_of_birth' => $dateOfBirth, // Inserisce la data di nascita stimata se non esiste già
+                        'date_of_birth' => $dateOfBirth, // Inserisce la data di nascita stimata se non esiste giï¿½
                     ]
                     );
                 
@@ -322,7 +322,7 @@ class ScrapeFbrefTeamStatsCommand extends Command
                 }
             }
         } else {
-            $this->warn("Nessuna tabella 'statistiche_ordinarie' trovata nell'output dello scraping, o è vuota.");
+            $this->warn("Nessuna tabella 'statistiche_ordinarie' trovata nell'output dello scraping, o ï¿½ vuota.");
         }
         
         $urlPath = parse_url($url, PHP_URL_PATH);
@@ -371,7 +371,7 @@ class ScrapeFbrefTeamStatsCommand extends Command
     }
     
     /**
-     * Calcola la data di nascita di un giocatore basandosi sulla stringa dell'età di Fbref
+     * Calcola la data di nascita di un giocatore basandosi sulla stringa dell'etï¿½ di Fbref
      * e sull'anno della stagione di riferimento.
      *
      * @param string|null $fbrefAgeString
@@ -386,9 +386,9 @@ class ScrapeFbrefTeamStatsCommand extends Command
         
         list($years, $days) = explode('-', $fbrefAgeString);
         
-        // La data di riferimento è l'inizio della stagione successiva (1° Luglio)
-        // Se un giocatore ha 26-167 nella stagione 2024 (che termina a metà 2025),
-        // allora al 1° Luglio 2025 aveva 26 anni e 167 giorni.
+        // La data di riferimento ï¿½ l'inizio della stagione successiva (1ï¿½ Luglio)
+        // Se un giocatore ha 26-167 nella stagione 2024 (che termina a metï¿½ 2025),
+        // allora al 1ï¿½ Luglio 2025 aveva 26 anni e 167 giorni.
         $referenceDate = Carbon::create($seasonYear + 1, 7, 1, 0, 0, 0, 'Europe/Rome');
         
         try {

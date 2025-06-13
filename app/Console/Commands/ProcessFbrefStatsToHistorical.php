@@ -7,22 +7,21 @@ use App\Models\PlayerFbrefStat;
 use App\Models\HistoricalPlayerStat;
 use App\Models\Player;
 use App\Models\Team;
-use Illuminate\Support\Facades\Log;
 
 class ProcessFbrefStatsToHistorical extends Command
 {
     protected $signature = 'stats:process-fbref-to-historical {--season=}';
-    protected $description = 'Processes raw FBRef stats and populates the historical_player_stats table, bypassing all roster checks.';
+    protected $description = 'Processes raw FBRef stats into the main historical stats table.';
     
     public function handle()
     {
         $seasonInput = $this->option('season');
         if (!$seasonInput || !is_numeric($seasonInput)) {
-            $this->error("Errore: Specificare la stagione con --season=YYYY (es. --season=2021)");
+            $this->error("Errore: Specificare la stagione con --season=YYYY");
             return 1;
         }
         
-        $this->info("Avvio processamento per stagione {$seasonInput} (Modalità Bypass Totale Attiva)");
+        $this->info("Avvio processamento per stagione {$seasonInput}...");
         
         $fbrefStats = PlayerFbrefStat::where('season_year', $seasonInput)->get();
         
@@ -31,58 +30,47 @@ class ProcessFbrefStatsToHistorical extends Command
             return 0;
         }
         
-        $this->info("Trovati {$fbrefStats->count()} record da processare.");
         $bar = $this->output->createProgressBar($fbrefStats->count());
         $bar->start();
         
-        $processedCount = 0;
-        $skippedCount = 0;
-        
         foreach ($fbrefStats as $fbrefStat) {
-            // Unico controllo: il record grezzo deve avere un player_id associato.
-            // Nessun altro controllo su 'fanta_platform_id' o 'api_football_data_id'.
-            if (!$fbrefStat->player_id) {
-                $skippedCount++;
+            $player = Player::find($fbrefStat->player_id);
+            if (!$player) {
                 $bar->advance();
                 continue;
             }
             
-            $player = Player::find($fbrefStat->player_id);
             $team = Team::find($fbrefStat->team_id);
+            $roleData = json_decode($fbrefStat->data, true);
+            $roleString = $roleData['Ruolo'] ?? 'X';
             
-            // Normalizza il ruolo (es. 'Dif' -> 'D')
             $roleMap = ['Por' => 'P', 'Dif' => 'D', 'Cen' => 'C', 'Att' => 'A'];
-            $firstRole = explode(',', $fbrefStat->position_fbref ?? '')[0];
-            $normalizedRole = $roleMap[trim($firstRole)] ?? strtoupper(substr(trim($firstRole), 0, 1));
+            $firstRole = trim(explode(',', $roleString)[0]);
+            $normalizedRole = $roleMap[$firstRole] ?? 'X';
             
             HistoricalPlayerStat::updateOrCreate(
                 [
-                    'player_id'   => $fbrefStat->player_id,
+                    'player_id'   => $player->id,
                     'season_year' => $seasonInput,
                 ],
                 [
-                    'league_name' => $fbrefStat->league_name,
-                    'player_fanta_platform_id' => $player->fanta_platform_id ?? null,
-                    'team_id' => $team->id ?? null,
-                    'team_name_for_season' => $team->name ?? null,
-                    'player_name' => $player->name ?? 'N/D',
-                    'role_for_season' => $normalizedRole,
-                    'games_played' => $fbrefStat->games_played,
-                    'goals_scored' => $fbrefStat->goals,
-                    'assists' => $fbrefStat->assists,
-                    'penalties_scored' => $fbrefStat->penalties_made,
-                    'penalties_taken' => $fbrefStat->penalties_attempted,
-                    'yellow_cards' => $fbrefStat->yellow_cards,
-                    'red_cards' => $fbrefStat->red_cards,
+                    'league_name'              => $fbrefStat->league_name,
+                    'player_fanta_platform_id' => $player->fanta_platform_id,
+                    'team_id'                  => $team->id ?? null,
+                    'team_name_for_season'     => $team->short_name ?? $team->name ?? 'N/D', // MODIFICA QUI
+                    'player_name'              => $player->name,
+                    'role_for_season'          => $normalizedRole,
+                    'games_played'             => (int) ($roleData['PG'] ?? 0),
+                    'goals_scored'             => (int) ($roleData['Reti'] ?? 0),
+                    'assists'                  => (int) ($roleData['Assist'] ?? 0),
                 ]
                 );
             
-            $processedCount++;
             $bar->advance();
         }
         
         $bar->finish();
-        $this->info("\nProcessamento completato. Letti: {$fbrefStats->count()}, Processati: {$processedCount}, Saltati: {$skippedCount}.");
+        $this->info("\nProcessamento completato.");
         return 0;
     }
 }

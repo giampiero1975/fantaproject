@@ -1,4 +1,5 @@
 eclipse.preferences.version=1
+encoding//app/Console/Commands/ScrapeFbrefTeamStatsCommand.php=UTF-8
 encoding//app/Console/Commands/TeamsSetActiveLeague.php=UTF-8
 encoding//app/Models/HistoricalPlayerStat.php=UTF-8
 encoding//app/Services/DataEnrichmentService.php=UTF-8
