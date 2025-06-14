@@ -7,6 +7,7 @@ use App\Models\PlayerFbrefStat;
 use App\Models\HistoricalPlayerStat;
 use App\Models\Player;
 use App\Models\Team;
+use Illuminate\Support\Facades\Log;
 
 class ProcessFbrefStatsToHistorical extends Command
 {

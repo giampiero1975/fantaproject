@@ -506,7 +506,7 @@ class DashboardController extends Controller
             }
             
             $coverageData[] = [
-                'team_name' => $team->name,
+                'team_name' => $team->short_name,
                 'coverage' => $coverage,
                 'is_fully_covered' => (count($targetSeasons) > 0 && $seasonsCoveredCount === count($targetSeasons)),
             ];

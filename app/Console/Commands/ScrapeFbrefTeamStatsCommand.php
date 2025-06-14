@@ -131,11 +131,11 @@ class ScrapeFbrefTeamStatsCommand extends Command
                 // --- MODIFICA QUI PER LEGGERE 'Et�' IN MODO ROBUSTO ---
                 $fbrefAgeString = null;
                 // Prova prima la chiave "Et�" con l'accento grave
-                if (isset($playerStatRow['Et�'])) {
-                    $fbrefAgeString = $playerStatRow['Et�'];
+                if (isset($playerStatRow['Età'])) {
+                    $fbrefAgeString = $playerStatRow['Età'];
                 }
                 // Se non trovata, prova la sua versione unicode se il parsing l'ha trasformata
-                elseif (isset($playerStatRow["Et\u{00e0}"])) { // Et� con accento grave codificato in UTF-8
+                elseif (isset($playerStatRow["Et\u{00e0}"])) { // Età con accento grave codificato in UTF-8
                     $fbrefAgeString = $playerStatRow["Et\u{00e0}"];
                 }
                 // Prova anche una versione senza accento, se per qualche ragione la fonte lo varia
@@ -145,11 +145,11 @@ class ScrapeFbrefTeamStatsCommand extends Command
                 // --- FINE MODIFICA ---
                 
                 // --- DEBUG AGGIUNTI (MANTENUTI) ---
-                Log::debug("DEBUG_ET�: Player: {$playerName}");
-                Log::debug("DEBUG_ET�:   - playerStatRow keys: " . json_encode(array_keys($playerStatRow)));
-                Log::debug("DEBUG_ET�:   - raw 'Et�' value (from playerStatRow['Et�']): " . ($playerStatRow['Et�'] ?? 'KEY_MISSING_RAW'));
-                Log::debug("DEBUG_ET�:   - raw 'Et\u{00e0}' value (from playerStatRow[\"Et\\u{00e0}\"]): " . ($playerStatRow["Et\u{00e0}"] ?? 'KEY_MISSING_UNICODE'));
-                Log::debug("DEBUG_ET�:   - \$fbrefAgeString value (after logic): " . ($fbrefAgeString ?? 'NULL_VAR_FINAL'));
+                Log::debug("DEBUG_ETÀ: Player: {$playerName}");
+                Log::debug("DEBUG_ETÀ:   - playerStatRow keys: " . json_encode(array_keys($playerStatRow)));
+                Log::debug("DEBUG_ETÀ:   - raw 'Età' value (from playerStatRow['Età']): " . ($playerStatRow['Età'] ?? 'KEY_MISSING_RAW'));
+                Log::debug("DEBUG_ETÀ:   - raw 'Et\u{00e0}' value (from playerStatRow[\"Et\\u{00e0}\"]): " . ($playerStatRow["Et\u{00e0}"] ?? 'KEY_MISSING_UNICODE'));
+                Log::debug("DEBUG_ETÀ:   - \$fbrefAgeString value (after logic): " . ($fbrefAgeString ?? 'NULL_VAR_FINAL'));
                 // --- FINE DEBUG AGGIUNTI ---
                 
                 if (!$playerName) {
@@ -164,34 +164,29 @@ class ScrapeFbrefTeamStatsCommand extends Command
                     $dateOfBirth = $this->calculateDateOfBirth($fbrefAgeString, (int) $seasonYear);
                 }
                 
-                // Trova o crea il Player nella tabella 'players'.
-                $player = Player::firstOrCreate(
-                    ['name' => $playerName],
-                    [
-                        'team_id' => $team->id,
-                        'team_name' => $team->name,
-                        'role' => $fantaRole,
+                // *** INIZIO BLOCCO CODICE CORRETTO ***
+                // Cerca un giocatore esistente per nome o inizializzane uno nuovo in memoria.
+                $player = Player::firstOrNew(['name' => $playerName]);
+                
+                // Controlla se il giocatore NON esiste già nel database.
+                // In questo modo, eseguiamo operazioni di scrittura SOLO per i nuovi giocatori.
+                if (!$player->exists) {
+                    // Il giocatore è nuovo, quindi lo popoliamo e lo salviamo.
+                    $player->fill([
+                        'team_id'           => $team->id,
+                        'team_name'         => $team->short_name, // <-- CORREZIONE: Usa short_name
+                        'role'              => $fantaRole,
                         'initial_quotation' => 0,
-                        'date_of_birth' => $dateOfBirth, // Inserisce la data di nascita stimata se non esiste gi�
-                    ]
-                    );
-                
-                // Aggiorna team_id, team_name e role se sono cambiati
-                $playerNeedsUpdate = false;
-                if ($player->team_id !== $team->id) { $player->team_id = $team->id; $playerNeedsUpdate = true; }
-                if ($player->team_name !== $team->name) { $player->team_name = $team->name; $playerNeedsUpdate = true; }
-                if ($player->role !== $fantaRole) { $player->role = $fantaRole; $playerNeedsUpdate = true; }
-                
-                // Se date_of_birth non era presente PRIMA di questo enrich, e ora l'abbiamo da FBRef, aggiornala
-                if ($player->date_of_birth === null && $dateOfBirth !== null) {
-                    $player->date_of_birth = $dateOfBirth;
-                    $playerNeedsUpdate = true;
-                }
-                
-                if ($playerNeedsUpdate || $player->isDirty()) {
+                        'date_of_birth'     => $dateOfBirth,
+                    ]);
+                    
                     $player->save();
-                    $this->line("Aggiornato dati (team, role, date_of_birth) per giocatore '{$player->name}'.");
+                    $this->line("Creato nuovo giocatore '{$playerName}' con squadra '{$team->short_name}'.");
+                    
+                } else {
+                    // CORREZIONE: Se il giocatore esiste già, non facciamo nulla, come richiesto.
                 }
+                // *** FINE BLOCCO CODICE CORRETTO ***
                 
                 // Prepara i dati per il salvataggio nella tabella 'player_fbref_stats'
                 $playerFbrefStatData = [
