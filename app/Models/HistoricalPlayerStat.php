@@ -39,8 +39,17 @@ class HistoricalPlayerStat extends Model
         return $this->belongsTo(Team::class); // Usa la FK team_id
     }
     
+    /*
     public function player() // Relazione utile
     {
         return $this->belongsTo(Player::class, 'player_fanta_platform_id', 'fanta_platform_id');
+    }
+    */
+    // In app/Models/HistoricalPlayerStat.php
+    
+    public function player()
+    {
+        // CORRETTO: Collega il player_id (FK) con l'id del giocatore (PK)
+        return $this->belongsTo(Player::class);
     }
 }

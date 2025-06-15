@@ -58,11 +58,6 @@ class DashboardController extends Controller
     
     // --- METODI PRIVATI PER GLI STATI ---
     
-    // NOTA: getVisualAttributesForStatus, getActiveTeamsStatus, getStandingsStatus, etc.
-    // rimangono esattamente come nell'ultima versione che ti ho dato,
-    // perché sono corretti e non causano errori.
-    // Li includo qui per darti il file completo.
-    
     private function getVisualAttributesForStatus(string $statusString, $details = ''): array
     {
         $statusKey = strtolower(str_replace([' ', '_'], '-', $statusString));
@@ -115,14 +110,10 @@ class DashboardController extends Controller
         return $this->getVisualAttributesForStatus($statusString, $details);
     }
     
-    // In app/Http/Controllers/DashboardController.php
-    
     private function getStandingsStatus(): array
     {
-        // Recupera le impostazioni dal file di configurazione
         $lookbackSeasons = config('team_tiering_settings.lookback_seasons_for_tiering', 3);
         
-        // 1. Identifica le squadre di Serie A attive
         $activeSerieATeams = Team::where('serie_a_team', true)->get();
         $activeTeamCount = $activeSerieATeams->count();
         
@@ -133,7 +124,6 @@ class DashboardController extends Controller
                 );
         }
         
-        // 2. Conta quante delle squadre attive hanno abbastanza dati storici
         $teamsWithSufficientHistory = 0;
         foreach ($activeSerieATeams as $team) {
             $historyCount = TeamHistoricalStanding::where('team_id', $team->id)->count();
@@ -142,7 +132,6 @@ class DashboardController extends Controller
             }
         }
         
-        // 3. Determina lo stato basandosi sul nuovo controllo
         $statusString = 'Non Popolato';
         $details = "Lo storico delle classifiche non è ancora stato popolato.";
         
@@ -156,7 +145,6 @@ class DashboardController extends Controller
         
         $visualAttributes = $this->getVisualAttributesForStatus($statusString, $details);
         
-        // Mostra sempre l'azione se lo stato non è 'Completato'
         if ($statusString !== 'Completato') {
             $visualAttributes['showAction'] = true;
         }
@@ -240,23 +228,19 @@ class DashboardController extends Controller
     
     private function getEnrichmentStatus(): array
     {
-        // Creiamo una query di base per i soli giocatori di Serie A
         $query = Player::whereHas('team', function ($q) {
             $q->where('serie_a_team', true);
         });
             
-            // Usiamo la query per contare il totale dei giocatori di Serie A
             $totalSerieAPlayers = $query->clone()->count();
             
             if ($totalSerieAPlayers === 0) {
                 return $this->getVisualAttributesForStatus('Non Applicabile', 'Nessun giocatore trovato per le squadre di Serie A attive.');
             }
             
-            // Dalla query dei giocatori di A, contiamo quanti hanno l'ID API mancante
             $missingEnrichment = $query->clone()->whereNull('api_football_data_id')->count();
             
             $statusString = 'Da Completare';
-            // Il messaggio ora è molto più preciso
             $details = "{$missingEnrichment} su {$totalSerieAPlayers} giocatori di Serie A necessitano di ID API.";
             
             if ($missingEnrichment === 0) {
@@ -288,48 +272,44 @@ class DashboardController extends Controller
         return $this->getVisualAttributesForStatus($statusString, $details);
     }
     
+    // --- METODO MODIFICATO ---
     private function getOtherHistoricalStatsStatus(): array
     {
-        // Leggiamo dalla config quante stagioni storiche ci servono come minimo
-        $requiredSeasons = config('team_tiering_settings.lookback_seasons_for_tiering', 3);
-        
         // Prendiamo solo i giocatori delle squadre di Serie A attive
         $query = Player::whereHas('team', function ($q) {
             $q->where('serie_a_team', true);
         });
-
-        $totalSerieAPlayers = $query->clone()->count();
+            
+            $totalSerieAPlayers = $query->clone()->count();
             
             if ($totalSerieAPlayers === 0) {
                 return $this->getVisualAttributesForStatus('Non Applicabile', 'Nessun giocatore trovato per le squadre di Serie A.');
             }
             
-            // Contiamo quanti di loro hanno uno storico INSUFFICIENTE
-            // Usiamo withCount per contare i record relazionati in modo efficiente
-            $incompletePlayersCount = $query->clone()->withCount('historicalStats')
-            ->get()
-            ->filter(function ($player) use ($requiredSeasons) {
-                return $player->historical_stats_count < $requiredSeasons;
-            })
-            ->count();
+            // --- NUOVA LOGICA ---
+            // Conta i giocatori di Serie A che NON hanno ALCUNA relazione con historicalStats
+            // Questo è molto più efficiente del withCount + filter
+            $incompletePlayersCount = $query->clone()->whereDoesntHave('historicalStats')->count();
             
             $statusString = 'Da Completare';
-            $details = "{$incompletePlayersCount} su {$totalSerieAPlayers} giocatori di Serie A hanno uno storico dati insufficiente (meno di {$requiredSeasons} stagioni).";
+            // Aggiorniamo il messaggio per riflettere la nuova logica
+            $details = "{$incompletePlayersCount} su {$totalSerieAPlayers} giocatori di Serie A non hanno alcuno storico dati presente.";
             
             if ($incompletePlayersCount === 0) {
                 $statusString = 'Completato';
-                $details = "Tutti i {$totalSerieAPlayers} giocatori di Serie A hanno uno storico dati sufficiente per le proiezioni.";
+                $details = "Tutti i {$totalSerieAPlayers} giocatori di Serie A hanno almeno un record nello storico dati.";
             }
             
             $attributes = $this->getVisualAttributesForStatus($statusString, $details);
             
-            // Mostriamo sempre l'azione se lo stato non è 'Completato'
+            // Mostriamo l'azione se lo stato non è 'Completato'
             if ($statusString !== 'Completato') {
                 $attributes['showAction'] = true;
             }
             
             return $attributes;
     }
+    
     
     private function getProjectionsStatus(): array
     {
@@ -359,8 +339,6 @@ class DashboardController extends Controller
     {
         return date('m') >= 7 ? (int)date('Y') : (int)date('Y') - 1;
     }
-    
-    // In app/Http/Controllers/DashboardController.php
     
     public function showHistoricalCoverage()
     {

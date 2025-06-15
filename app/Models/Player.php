@@ -37,9 +37,16 @@ class Player extends Model
         return $this->belongsTo(Team::class);
     }
     
+    /*
     public function historicalStats()
     {
         return $this->hasMany(HistoricalPlayerStat::class, 'player_fanta_platform_id', 'fanta_platform_id');
+    }
+    */
+    public function historicalStats()
+    {
+        // CORRETTO: Collega l'id del giocatore (PK) con il player_id dello storico (FK)
+        return $this->hasMany(HistoricalPlayerStat::class);
     }
     
     public function fbrefStats()
